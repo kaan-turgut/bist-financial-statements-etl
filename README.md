@@ -14,14 +14,20 @@ Proje; gelir tablolarını, bilançoları, nakit akış tablolarını ve özkayn
 
 Finans öğrencileri, araştırmacılar ve şirket finansallarını kendi yöntemleriyle incelemek isteyen herkes için hazırlanmıştır.
 
+### Projenin devamında yapmayı planladıklarım:
+- Veri altyapısını şirket faaliyet raporları ve makroekonomik göstergelerle zenginleştirmek.
+- Eğilimleri incelemek, şirketleri karşılaştırmak ve zaman içindeki değişimleri takip etmek için raporlama ve görselleştirme araçları geliştirmek.
+- Bildirimleri özetleyen; dikkat çekebilecek riskleri, fırsatları ve örüntüleri ortaya çıkaran yapay zekâ destekli araçlar oluşturmak.
+- Bu farklı veri ve analizleri bir araya getirerek potansiyel yatırım fırsatlarını araştırmak; sonuçları kesin tahmin veya yatırım tavsiyesi değil, karar desteği olarak değerlendirmek.
+
 ## Neler yapabilirsiniz?
 
-- Bir şirketin gelir, varlık, borç ve nakit akışı gibi kalemlerini dönemler boyunca inceleyebilirsiniz.
+- Bir şirketin gelir, varlık, borç ve nakit akışı gibi kalemlerini çeyreklik olarak inceleyebilirsiniz.
 - Enflasyon etkisi azaltılmış değerlerle farklı yılları daha anlamlı biçimde karşılaştırabilirsiniz.
 - Günlük hisse fiyatlarını indirip finansal tablo verileriyle birlikte inceleyebilirsiniz. (Fiyatlar İş Yatırım web sitesinden gelir)
 - USD karşılıklarını, son 12 aylık toplamları ve hesaplanan finansal oranları sorgulayabilirsiniz.
 - Hazırlanan verileri kendi şirket karşılaştırmalarınızda, grafiklerinizde ve araştırmalarınızda kullanabilirsiniz.
-- SQLite veritabanını Jupyter Notebook'a veya uyumlu bir iş zekâsı aracına (Power BI, Tableau) bağlayabilirsiniz.
+- SQLite veritabanını Jupyter Notebook'a veya uyumlu bir iş zekâsı aracına (Power BI, Tableau gibi) bağlayabilirsiniz.
 
 ## Üretilen çıktılar
 
@@ -121,7 +127,7 @@ Geri yükleme öncesinde şu anki veritabanı da yeni bir yedek olarak saklanır
 - USD/TRY referans verileri Frankfurter servisinden alınır ve aylık değerlere dönüştürülür.
 - Günlük hisse fiyatı verileri İş Yatırım'dan alınır. Tekrar çalıştırma yalnızca seçilen şirketleri ve tarih aralığını yeniler.
 - Bazı finansal tablolar KAP'ta çeyrek içi değerler yerine tüm yıl için kümülatif değerler ile sunulur. Proje, uygun gelir tablosu değerlerini tek çeyrek değerine dönüştürür.
-- Kaynak raporların biçimi değişebilir; otomatik okuma her kalemi kusursuz tanımayabilir. Veritabanı analiz içindir, resmî raporun yerine geçmez.
+- Kaynak raporların biçimi değişebilir; otomatik okuma her kalemi kusursuz tanımayabilir. Veritabanı analiz içindir, resmi raporun yerine geçmez.
 
 ## Proje yapısı
 
@@ -157,6 +163,12 @@ The project processes income statements, balance sheets, cash flow statements, a
 **This project does not predict stock prices or provide investment advice.** Automated processing can make mistakes, so check important findings against the original KAP reports.
 
 It is intended for finance students, researchers, and anyone who wants to explore company financials using their own methods.
+
+### What I plan to do in the continuation of this project
+- Expand the dataset with company activity reports and macroeconomic indicators.
+- Build reporting and visualization tools to explore trends, compare companies, and monitor changes over time.
+- Develop AI-assisted tools to summarize disclosures and surface potentially relevant risks, opportunities, and patterns.
+- Combine these perspectives to research potential investment opportunities, while treating the results as decision support, not guaranteed predictions or investment advice.
 
 ## What you can do with it
 

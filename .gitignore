@@ -1,0 +1,50 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Jupyter
+.ipynb_checkpoints/
+test.ipynb
+
+# macOS
+.DS_Store
+
+# VS Code and IDE settings
+.vscode/
+.idea/
+
+# Testing and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+database_backups/
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Downloaded and generated financial data
+financial_statements/
+
+# Archives
+*.zip
+
+# Logs and temporary files
+*.log
+*.tmp

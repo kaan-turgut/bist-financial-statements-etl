@@ -1,0 +1,16 @@
+beautifulsoup4
+pandas
+requests
+Unidecode
+numpy
+
+# Validation notebook
+matplotlib
+plotly
+ipython
+nbformat
+jupyter
+
+# Development tools
+pytest
+ruff

@@ -1,0 +1,114 @@
+{
+    "kar veya zararda yeniden siniflandirilmayacaklar": {
+        "level": 1,
+        "label": "not reclassifiable to profit or loss"
+    },
+    "kar veya zararda yeniden siniflandirilacaklar": {
+        "level": 1,
+        "label": "reclassifiable to profit or loss"
+    },
+    "kar veya zarar olarak yeniden siniflandirilacaklar": {
+        "level": 1,
+        "label": "reclassifiable to profit or loss"
+    },
+    "kar veya zarar olarak yeniden siniflandirilmayacaklar": {
+        "level": 1,
+        "label": "not reclassifiable to profit or loss"
+    },
+    "kar veya zararda yeniden siniflandirilmayacak diger kapsamli gelire iliskin vergiler": {
+        "level": 2,
+        "label": "tax effects on non-reclassifiable OCI"
+    },
+    "kar veya zararda yeniden siniflandirilacak diger kapsamli gelire iliskin vergiler": {
+        "level": 2,
+        "label": "tax effects on reclassifiable OCI"
+    },
+    "kar veya zararda yeniden siniflandirilmayacak diger kapsamli gelir unsurlari": {
+        "level": 2,
+        "label": "non-reclassifiable OCI components"
+    },
+    "kar veya zararda yeniden siniflandirilacak diger kapsamli gelir unsurlari": {
+        "level": 2,
+        "label": "reclassifiable OCI components"
+    },
+    "kar veya zararda yeniden siniflandirilmayacak birikmis diger kapsamli gelirler giderler": {
+        "level": 1,
+        "label": "accumulated OCI not reclassifiable to profit or loss"
+    },
+    "kar veya zararda yeniden siniflandirilacak birikmis diger kapsamli gelirler giderler": {
+        "level": 1,
+        "label": "accumulated OCI reclassifiable to profit or loss"
+    },
+    "kar veya zararda yeniden siniflandirilmayacak birikmis diger kapsamli gelirler (giderler)": {
+        "level": 1,
+        "label": "accumulated OCI not reclassifiable to profit or loss"
+    },
+    "kar veya zararda yeniden siniflandirilacak birikmis diger kapsamli gelirler (giderler)": {
+        "level": 1,
+        "label": "accumulated OCI reclassifiable to profit or loss"
+    },
+    "isletme faaliyetlerinden nakit akislari": {
+        "level": 1,
+        "label": "operating activities"
+    },
+    "yatirim faaliyetlerinden kaynaklanan nakit akislari": {
+        "level": 1,
+        "label": "investing activities"
+    },
+    "yatirim faaliyetlerinden nakit akislari": {
+        "level": 1,
+        "label": "investing activities"
+    },
+    "finansman faaliyetlerinden nakit akislari": {
+        "level": 1,
+        "label": "financing activities"
+    },
+    "finansman faaliyetlerinden kaynaklanan nakit akislari": {
+        "level": 1,
+        "label": "financing activities"
+    },
+    "kisa vadeli borclanmalar": {
+        "level": 1,
+        "label": "short-term borrowings"
+    },
+    "iliskili taraflardan kisa vadeli borclanmalar": {
+        "level": 2,
+        "label": "related-party short-term borrowings"
+    },
+    "iliskili olmayan taraflardan kisa vadeli borclanmalar": {
+        "level": 2,
+        "label": "unrelated-party short-term borrowings"
+    },
+    "diger kisa vadeli borclanmalar": {
+        "level": 2,
+        "label": "other short-term borrowings"
+    },
+    "uzun vadeli borclanmalar": {
+        "level": 1,
+        "label": "long-term borrowings"
+    },
+    "iliskili taraflardan uzun vadeli borclanmalar": {
+        "level": 2,
+        "label": "related-party long-term borrowings"
+    },
+    "iliskili olmayan taraflardan uzun vadeli borclanmalar": {
+        "level": 2,
+        "label": "unrelated-party long-term borrowings"
+    },
+    "uzun vadeli borclanmalarin kisa vadeli kisimlari": {
+        "level": 1,
+        "label": "current portion of long-term borrowings"
+    },
+    "iliskili taraflardan uzun vadeli borclanmalarin kisa vadeli kisimlari": {
+        "level": 2,
+        "label": "related-party current portion of long-term borrowings"
+    },
+    "iliskili olmayan taraflardan uzun vadeli borclanmalarin kisa vadeli kisimlari": {
+        "level": 2,
+        "label": "unrelated-party current portion of long-term borrowings"
+    },
+    "diger uzun vadeli borclanmalarin kisa vadeli kisimlari": {
+        "level": 2,
+        "label": "other current portion of long-term borrowings"
+    }
+}

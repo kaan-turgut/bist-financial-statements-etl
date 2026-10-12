@@ -1,4 +1,6 @@
-# BIST Şirketleri İçin Finansal Veri Seti
+<a id="turkce"></a>
+
+# BIST Şirketleri İçin Finansal Veri Pipeline'ı
 
 **Türkçe** | [English](#english)
 
@@ -142,9 +144,9 @@ Testleri çalıştırmak için proje klasöründe `python -m pytest` komutunu ku
 
 <a id="english"></a>
 
-# BIST Financial Data Set
+# BIST Financial Data Pipeline
 
-[Türkçe](#bist-şirketleri-için-finansal-veri-seti) | **English**
+[Türkçe](#turkce) | **English**
 
 ## At a glance
 

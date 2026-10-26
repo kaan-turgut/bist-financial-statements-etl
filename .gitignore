@@ -15,6 +15,7 @@ __pycache__/
 # Jupyter
 .ipynb_checkpoints/
 test.ipynb
+migration.ipynb
 
 # macOS
 .DS_Store

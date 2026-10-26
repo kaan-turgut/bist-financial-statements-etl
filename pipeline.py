@@ -3,7 +3,7 @@ import logging
 
 from database_processing.helpers import resolve_inflation_period, restore_sqlite_backup
 from logging_config import configure_logging
-from services.company_loader import load_companies
+from services.company_loader import load_companies, resolve_price_symbols, resolve_symbols
 from services.download_statements import download
 from services.exchange_fetcher import get_exchange
 from services.inflation_fetcher import get_inflation
@@ -99,10 +99,7 @@ def resolve_companies(symbols):
     if not symbols:
         return list(companies_by_symbol.values())
 
-    normalized_symbols = [symbol.upper() for symbol in symbols]
-    missing = sorted(set(normalized_symbols) - set(companies_by_symbol))
-    if missing:
-        raise ValueError(f"Unknown company symbols: {', '.join(missing)}")
+    normalized_symbols = resolve_symbols(symbols)
     return [companies_by_symbol[symbol] for symbol in normalized_symbols]
 
 
@@ -190,7 +187,11 @@ def main(argv=None):
     elif args.command == "update-prices":
         if (args.price_level_year is None) != (args.price_level_month is None):
             parser.error("provide both --price-level-year and --price-level-month, or neither")
-        symbols = [company.symbol for company in companies]
+        symbols = (
+            resolve_price_symbols(args.symbols)
+            if args.symbols
+            else [company.symbol for company in companies]
+        )
         logger.info("Downloading historic prices for %s companies", len(symbols))
         update_prices(
             symbols=symbols,
@@ -204,7 +205,7 @@ def main(argv=None):
                 args.price_level_year, args.price_level_month, symbols=symbols
             )
     elif args.command == "adjust-prices":
-        symbols = [company.symbol for company in companies] if args.symbols else None
+        symbols = resolve_price_symbols(args.symbols) if args.symbols else None
         adjust_price_table_for_inflation(
             args.price_level_year, args.price_level_month, symbols=symbols
         )

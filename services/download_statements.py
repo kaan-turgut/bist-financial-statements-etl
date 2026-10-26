@@ -9,7 +9,7 @@ from paths import FINANCIAL_STATEMENTS_DIR
 logger = logging.getLogger(__name__)
 
 
-def download_file(company, year, retries=5, delay=5, request_sleep=5.0, rate_limit_delay=120):
+def download_file(company, year, retries=5, delay=5, request_sleep=10.0, rate_limit_delay=180):
     base_url = "https://www.kap.org.tr/tr/api/home-financial/download-file"
 
     symbol = company.symbol

@@ -33,10 +33,9 @@ FIELD_DESCRIPTIONS = {
     "financialType": "KAP financial type code. Useful when separating ordinary companies, banks, financial firms, funds, or other reporting categories.",
     "faaliyetDurumu": "KAP activity-status code. Useful for filtering inactive or special-status companies.",
     "payIslemDurumu": "KAP share-trading-status flag. Used as one signal that company shares are traded.",
-    "stockCode": "Raw stock/member code shown in KAP memberDetail. May contain multiple codes for some members.",
     "freeFloatSymbol": "Borsa code from KAP's free-float shares table. Usually the cleanest listed equity ticker.",
+    "symbolAliases": "Other current share-class or legacy/member codes that resolve to this record's ticker key.",
     "companyCode": "Numeric KAP company page code used in company detail URLs.",
-    "abcdCode": "Additional KAP code field, when present. Kept for traceability.",
     "taxNo": "Company tax number from KAP registration information.",
     "taxOffice": "Company tax office from KAP registration information.",
     "tradeRegNo": "Trade registry number from KAP.",
@@ -66,6 +65,7 @@ FIELD_DESCRIPTIONS = {
     "source": "Source label for this record.",
     "lastUpdated": "ISO timestamp showing when this record was generated.",
 }
+MISSING_VALUE_TEXT = "Bilgi Mevcut Değil"
 
 
 def parse_args():
@@ -86,6 +86,11 @@ def parse_args():
         help="Where to track KAP members skipped because their shares are not traded.",
     )
     parser.add_argument("--limit", type=int, help="Process only the first N companies for testing.")
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        help="Refresh only these existing ticker(s), resolved through their KAP company code.",
+    )
     parser.add_argument("--sleep", type=float, default=1.5, help="Seconds to sleep between company requests.")
     parser.add_argument("--retries", type=int, default=6, help="HTTP attempts per KAP page.")
     parser.add_argument(
@@ -217,18 +222,29 @@ def text_lines(html):
 
 def value_after(lines, label):
     try:
-        return lines[lines.index(label) + 1]
+        value = lines[lines.index(label) + 1]
     except (ValueError, IndexError):
         return None
+    return None if value.strip() == MISSING_VALUE_TEXT else value
+
+
+def normalize_missing_values(value):
+    if isinstance(value, str) and value.strip() == MISSING_VALUE_TEXT:
+        return None
+    if isinstance(value, dict):
+        return {key: normalize_missing_values(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_missing_values(item) for item in value]
+    return value
 
 
 def parse_number(value):
     if value is None:
-        return "Bilgi Mevcut Değil"
+        return None
 
     cleaned = value.strip()
-    if not cleaned or cleaned == "Bilgi Mevcut Değil":
-        return "Bilgi Mevcut Değil"
+    if not cleaned or cleaned == MISSING_VALUE_TEXT:
+        return None
 
     cleaned = cleaned.replace(".", "").replace(",", ".")
     try:
@@ -334,7 +350,7 @@ def remove_malformed_symbol_keys(companies):
     return cleaned
 
 
-def extract_capital_market_instrument(lines):
+def extract_capital_market_instrument(lines, general_html=None):
     market = value_after(lines, "Sermaye Piyasası Aracının İşlem Gördüğü Pazar")
     empty = {
         "type": None,
@@ -343,20 +359,52 @@ def extract_capital_market_instrument(lines):
         "exchange": None,
         "market": market,
     }
+
+    if general_html:
+        soup = BeautifulSoup(general_html, "html.parser")
+        for row in soup.find_all("tr"):
+            cells = [
+                cell.get_text(" ", strip=True)
+                for cell in row.find_all(["th", "td"], recursive=False)
+            ]
+            if not cells or normalize_symbol(cells[0]) != normalize_symbol("PAY SENEDİ"):
+                continue
+            cells += [""] * max(0, 5 - len(cells))
+            return {
+                "type": cells[0] or None,
+                "listingDate": cells[1] or None,
+                "country": cells[2] or None,
+                "exchange": cells[3] or None,
+                "market": cells[4] or market,
+            }
+
     try:
         start = lines.index("PAY SENEDİ")
     except ValueError:
         return empty
 
-    if len(lines) <= start + 4 or lines[start] == "Bilgi Mevcut Değil":
+    if len(lines) <= start + 1 or lines[start] == "Bilgi Mevcut Değil":
         return empty
+
+    remaining = lines[start + 1:]
+    country_values = {"TÜRKİYE", "TURKEY"}
+    if remaining[0].upper() in country_values:
+        # KAP sometimes emits an empty listing-date cell; text extraction drops it.
+        listing_date = None
+        country, exchange = remaining[:2]
+        instrument_market = remaining[2] if len(remaining) > 2 else market
+    else:
+        listing_date = remaining[0]
+        country = remaining[1] if len(remaining) > 1 else None
+        exchange = remaining[2] if len(remaining) > 2 else None
+        instrument_market = remaining[3] if len(remaining) > 3 else market
 
     return {
         "type": lines[start],
-        "listingDate": lines[start + 1],
-        "country": lines[start + 2],
-        "exchange": lines[start + 3],
-        "market": lines[start + 4] if lines[start + 4] else market,
+        "listingDate": listing_date,
+        "country": country,
+        "exchange": exchange,
+        "market": instrument_market or market,
     }
 
 
@@ -445,10 +493,12 @@ def build_company_info(summary_html, general_html, summary_url=None, general_url
         "shares": primary_share_class["freeFloatShares"] if primary_share_class else None,
         "ratio": primary_share_class["freeFloatRatio"] if primary_share_class else None,
     }
-    capital_market_instrument = extract_capital_market_instrument(lines)
+    capital_market_instrument = extract_capital_market_instrument(lines, general_html)
     stock_code_raw = member_detail.get("stockCode") or ""
     stock_symbols = sorted(normalize_list_symbols(stock_code_raw))
-    stock_code = free_float_info["symbol"] or (stock_symbols[0] if stock_symbols else None)
+    stock_code = free_float_info["symbol"]
+    if not stock_code and len(stock_symbols) == 1:
+        stock_code = stock_symbols[0]
     has_traded_shares = shares_are_traded(member_detail, capital_details, lines)
 
     info = {
@@ -462,10 +512,8 @@ def build_company_info(summary_html, general_html, summary_url=None, general_url
         "financialType": member_detail.get("financialType"),
         "faaliyetDurumu": member_detail.get("faaliyetDurumu"),
         "payIslemDurumu": member_detail.get("payIslemDurumu"),
-        "stockCode": stock_code_raw,
         "freeFloatSymbol": free_float_info["symbol"],
         "companyCode": member_detail.get("companyCode"),
-        "abcdCode": member_detail.get("abcdCode"),
         "taxNo": member_detail.get("taxNo"),
         "taxOffice": member_detail.get("taxOffice"),
         "tradeRegNo": member_detail.get("tradeRegNo"),
@@ -486,10 +534,10 @@ def build_company_info(summary_html, general_html, summary_url=None, general_url
         "paidInCapital": paid_in_capital,
         "capitalCeiling": capital_ceiling,
         "capitalDetails": capital_details,
-        "freeFloatShares": free_float_info["shares"],
-        "freeFloatRatio": free_float_info["ratio"],
-        "primarySymbol": stock_code,
         "shareClasses": free_float_rows,
+        "symbolAliases": sorted(
+            (set(stock_symbols) | {row["symbol"] for row in free_float_rows}) - {stock_code}
+        ) if stock_code else sorted(set(stock_symbols) | {row["symbol"] for row in free_float_rows}),
         "numSharesOutstanding": calculate_num_shares(capital_details, paid_in_capital),
         "hasTradedShares": has_traded_shares,
         "kapSummaryUrl": summary_url,
@@ -499,16 +547,11 @@ def build_company_info(summary_html, general_html, summary_url=None, general_url
     }
 
     infos_by_symbol = {}
-    if free_float_rows:
-        for share_class in free_float_rows:
-            symbol = share_class["symbol"]
-            symbol_info = copy.deepcopy(info)
-            symbol_info["freeFloatSymbol"] = symbol
-            symbol_info["freeFloatShares"] = share_class["freeFloatShares"]
-            symbol_info["freeFloatRatio"] = share_class["freeFloatRatio"]
-            symbol_info["shareClass"] = share_class
-            infos_by_symbol[symbol] = symbol_info
-    elif stock_code:
+    if stock_code:
+        infos_by_symbol[stock_code] = info
+
+    info = normalize_missing_values(info)
+    if stock_code:
         infos_by_symbol[stock_code] = info
 
     return stock_code, info, has_traded_shares, infos_by_symbol
@@ -528,6 +571,74 @@ def load_existing_company_info(output_path):
 
     with open(output_path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def consolidate_company_info_by_oid(companies):
+    """Collapse duplicate keys for one MKK member while retaining class/code metadata."""
+    groups = {}
+    for symbol, info in companies.items():
+        oid = info.get("mkkMemberOid")
+        if oid:
+            groups.setdefault(oid, []).append((symbol, info))
+
+    consolidated = dict(companies)
+    removed = 0
+    for oid, entries in groups.items():
+        if len(entries) < 2:
+            continue
+
+        all_symbols = {symbol for symbol, _ in entries}
+        traded_symbols = {
+            info.get("freeFloatSymbol")
+            for _, info in entries
+            if info.get("freeFloatSymbol")
+        }
+        if not traded_symbols:
+            logger.warning("Keeping duplicate MKK OID %s: no verified traded symbol to select", oid)
+            continue
+
+        def traded_share_count(candidate):
+            values = [
+                share_class.get("freeFloatShares")
+                for _, info in entries
+                for share_class in info.get("shareClasses") or []
+                if share_class.get("symbol") == candidate
+            ]
+            numeric = [value for value in values if isinstance(value, (int, float))]
+            return max(numeric, default=-1)
+
+        canonical = sorted(
+            traded_symbols,
+            key=lambda candidate: (-traded_share_count(candidate), candidate),
+        )[0]
+        canonical_entry = next(
+            ((symbol, info) for symbol, info in entries if symbol == canonical),
+            max(entries, key=lambda entry: entry[1].get("lastUpdated") or ""),
+        )
+        merged = copy.deepcopy(canonical_entry[1])
+
+        classes_by_symbol = {}
+        for _, info in entries:
+            for share_class in info.get("shareClasses") or []:
+                if share_class.get("symbol"):
+                    classes_by_symbol[share_class["symbol"]] = share_class
+            if info.get("freeFloatSymbol"):
+                classes_by_symbol.setdefault(info["freeFloatSymbol"], {"symbol": info["freeFloatSymbol"]})
+
+        aliases = set(merged.get("symbolAliases") or [])
+        aliases.update(all_symbols - {canonical})
+        aliases.update(traded_symbols - {canonical})
+        merged["freeFloatSymbol"] = canonical
+        merged["symbolAliases"] = sorted(aliases)
+        merged["shareClasses"] = sorted(classes_by_symbol.values(), key=lambda item: item["symbol"])
+
+        for symbol, _ in entries:
+            if symbol != canonical:
+                consolidated.pop(symbol, None)
+                removed += 1
+        consolidated[canonical] = merged
+
+    return consolidated, removed
 
 
 def write_json(data, output_path):
@@ -557,7 +668,7 @@ def refresh_company_info(output_path=DEFAULT_OUTPUT_PATH, field_descriptions_pat
                          non_traded_cache_path=DEFAULT_NON_TRADED_CACHE_PATH,
                          limit=None, sleep_seconds=3.0, include_non_traded=False, retries=6,
                          retry_backoff=5.0, rate_limit_backoff=60.0, missing_only=False,
-                         recheck_non_traded=False, start_after=None):
+                         recheck_non_traded=False, start_after=None, symbols=None):
     from datetime import UTC, datetime
 
     output_path = Path(output_path)
@@ -572,8 +683,50 @@ def refresh_company_info(output_path=DEFAULT_OUTPUT_PATH, field_descriptions_pat
     )
     companies = load_existing_company_info(output_path)
     companies = remove_malformed_symbol_keys(companies)
+    companies, consolidated_count = consolidate_company_info_by_oid(companies)
+    if consolidated_count:
+        write_company_info(companies, output_path)
+        logger.info("Consolidated %s duplicate company keys by MKK OID", consolidated_count)
     if companies:
         logger.info("Loaded %s existing companies from %s", len(companies), output_path)
+
+    if symbols:
+        requested = {symbol.strip().upper() for symbol in symbols if symbol.strip()}
+        selected_codes = set()
+        for requested_symbol in requested:
+            matches = [
+                (key, info)
+                for key, info in companies.items()
+                if key.upper() == requested_symbol
+                or requested_symbol in {alias.upper() for alias in info.get("symbolAliases", [])}
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"Expected one company_info.json record for {requested_symbol}; found {len(matches)}."
+                )
+            company_code = matches[0][1].get("companyCode")
+            if not company_code:
+                raise ValueError(f"No KAP companyCode is stored for {requested_symbol}.")
+            selected_codes.add(str(company_code))
+
+        company_links = [
+            (url, label)
+            for url, label in company_links
+            if (match := re.search(r"/ozet/(\d+)(?:-|/|$)", url))
+            and match.group(1) in selected_codes
+        ]
+        found_codes = {
+            match.group(1)
+            for url, _ in company_links
+            if (match := re.search(r"/ozet/(\d+)(?:-|/|$)", url))
+        }
+        missing_codes = selected_codes - found_codes
+        if missing_codes:
+            raise ValueError(
+                "Could not find the requested KAP company page(s) in the BIST list: "
+                + ", ".join(sorted(missing_codes))
+            )
+        logger.info("Single-company mode selected %s KAP page(s)", len(company_links))
 
     non_traded_cache = load_existing_company_info(non_traded_cache_path)
     if non_traded_cache:
@@ -595,6 +748,11 @@ def refresh_company_info(output_path=DEFAULT_OUTPUT_PATH, field_descriptions_pat
 
     if missing_only:
         existing_symbols = {symbol.upper() for symbol in companies}
+        existing_symbols.update(
+            alias.upper()
+            for info in companies.values()
+            for alias in info.get("symbolAliases", [])
+        )
         cached_non_traded_symbols = (
             set() if recheck_non_traded else {symbol.upper() for symbol in non_traded_cache}
         )
@@ -654,9 +812,37 @@ def refresh_company_info(output_path=DEFAULT_OUTPUT_PATH, field_descriptions_pat
             continue
 
         if is_traded or include_non_traded:
-            kept_symbols = sorted(infos_by_symbol) or [symbol]
+            kept_symbols = sorted(infos_by_symbol)
+            if not kept_symbols:
+                logger.warning(
+                    "Skipping %s: no unambiguous canonical traded symbol was found",
+                    list_code,
+                )
+                skipped += 1
+                continue
+
             for kept_symbol in kept_symbols:
-                companies[kept_symbol] = infos_by_symbol.get(kept_symbol, info)
+                updated_info = copy.deepcopy(infos_by_symbol[kept_symbol])
+                oid = updated_info.get("mkkMemberOid")
+                old_keys = {
+                    existing_symbol
+                    for existing_symbol, existing_info in companies.items()
+                    if oid and existing_info.get("mkkMemberOid") == oid
+                }
+                updated_info["symbolAliases"] = sorted(
+                    (
+                        set(updated_info.get("symbolAliases") or [])
+                        | old_keys
+                        | {
+                            alias
+                            for old_key in old_keys
+                            for alias in (companies[old_key].get("symbolAliases") or [])
+                        }
+                    ) - {kept_symbol}
+                )
+                for old_key in old_keys:
+                    companies.pop(old_key, None)
+                companies[kept_symbol] = updated_info
             write_company_info(companies, output_path)
             logger.info("[%s/%s] kept %s", index, len(company_links), ", ".join(kept_symbols))
         else:
@@ -702,6 +888,7 @@ def main():
         missing_only=args.missing_only,
         recheck_non_traded=args.recheck_non_traded,
         start_after=args.start_after,
+        symbols=args.symbols,
     )
 
 

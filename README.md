@@ -10,14 +10,14 @@ BIST şirketlerinin KAP'ta yayımlanan finansal tablolarını indirip düzenli, 
 
 Proje; gelir tablolarını, bilançoları, nakit akış tablolarını ve özkaynak değişim tablolarını işler. Enflasyon etkisini dikkate alan değerler, USD karşılıkları, son 12 aylık göstergeler ve finansal oranlar da üretir. Sonuçları Jupyter Notebook, SQLite veya destekleyen bir raporlama aracıyla inceleyebilirsiniz.
 
-**Bu proje hisse fiyatı tahmini yapmaz ve yatırım tavsiyesi vermez.** Veriler otomatik olarak işlense de önemli analizleri KAP'taki asıl raporlarla karşılaştırın.
+**Bu proje hisse fiyatı tahmini yapmaz ve yatırım tavsiyesi vermez.** Önemli analizleri mutlaka KAP'taki orijinal raporlarla karşılaştırın.
 
 Finans öğrencileri, araştırmacılar ve şirket finansallarını kendi yöntemleriyle incelemek isteyen herkes için hazırlanmıştır.
 
 ### Projenin devamında yapmayı planladıklarım:
 - Veri altyapısını şirket faaliyet raporları ve makroekonomik göstergelerle zenginleştirmek.
 - Eğilimleri incelemek, şirketleri karşılaştırmak ve zaman içindeki değişimleri takip etmek için raporlama ve görselleştirme araçları geliştirmek.
-- Bildirimleri özetleyen; dikkat çekebilecek riskleri, fırsatları ve örüntüleri ortaya çıkaran yapay zekâ destekli araçlar oluşturmak.
+- Bildirimleri özetleyen; dikkat çekebilecek riskleri, fırsatları ve örüntüleri ortaya çıkaran yapay zeka destekli araçlar oluşturmak.
 - Bu farklı veri ve analizleri bir araya getirerek potansiyel yatırım fırsatlarını araştırmak; sonuçları kesin tahmin veya yatırım tavsiyesi değil, karar desteği olarak değerlendirmek.
 
 ## Neler yapabilirsiniz?
@@ -27,11 +27,11 @@ Finans öğrencileri, araştırmacılar ve şirket finansallarını kendi yönte
 - Günlük hisse fiyatlarını indirip finansal tablo verileriyle birlikte inceleyebilirsiniz. (Fiyatlar İş Yatırım web sitesinden gelir)
 - USD karşılıklarını, son 12 aylık toplamları ve hesaplanan finansal oranları sorgulayabilirsiniz.
 - Hazırlanan verileri kendi şirket karşılaştırmalarınızda, grafiklerinizde ve araştırmalarınızda kullanabilirsiniz.
-- SQLite veritabanını Jupyter Notebook'a veya uyumlu bir iş zekâsı aracına (Power BI, Tableau gibi) bağlayabilirsiniz.
+- SQLite veritabanını Jupyter Notebook'a veya uyumlu bir iş zekası aracına (Power BI, Tableau gibi) bağlayabilirsiniz.
 
 ## Üretilen çıktılar
 
-Ana çıktı, proje klasöründeki `bist_data.db` dosyasıdır. Bu, tabloları sorgulanabilen yerel bir veritabanıdır. Başlıca tablolar:
+Ana çıktı, proje klasöründeki `bist_data.db` dosyasıdır. Bu, tabloları sorgulanabilen lokal bir veritabanıdır. Başlıca tablolar:
 
 | Tablo | İçerik |
 | --- | --- |
@@ -108,7 +108,7 @@ Belirli bir enflasyon hedefi kullanmak isterseniz hem `--price-level-year` hem d
 ## Veri güvenliği ve kapsam
 
 - Veritabanı güncellenmeden önce mevcut veritabanının doğrulanmış bir kopyası `database_backups/` klasörüne kaydedilir. Dosya adında yedekleme zamanı bulunur.
-- İstenen bir şirket ve dönem için yerel rapor dosyası yoksa o dönemdeki mevcut veritabanı satırları korunur ve eksikler loglarda bildirilir. Hiç uygun dosya bulunamazsa veritabanı değiştirilmeden işlem durur.
+- İstenen bir şirket ve dönem için lokal rapor dosyası yoksa o dönemdeki mevcut veritabanı satırları korunur ve eksikler loglarda bildirilir. Hiç uygun dosya bulunamazsa veritabanı değiştirilmeden işlem durur.
 - Başlangıç dönemi bitiş döneminden sonraysa komut herhangi bir işe başlamadan hata verir.
 - İndirilen dosyalar ve veri tabanı yedekleri otomatik silinmez. Disk alanını yönetmek için bunları kendiniz silebilirsiniz.
 
@@ -139,7 +139,7 @@ read_statements/        Rapor arşivlerini bulma, okuma ve kaydetme
 services/               İndirme ve referans verisi servisleri
 tests/                  Otomatik kontroller
 pipeline.py             Komut satırı giriş noktası
-bist_data.db            Oluşturulan yerel veritabanı
+bist_data.db            Oluşturulan lokal veritabanı
 ```
 
 ## Geliştirici notu

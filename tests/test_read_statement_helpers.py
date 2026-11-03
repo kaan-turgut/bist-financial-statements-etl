@@ -1,6 +1,11 @@
 import pandas as pd
 
-from read_statements.helpers import classify_texts, parse_date_year, parse_interval, turkish_lower
+from read_statements.helpers import (
+    classify_texts,
+    parse_date_year,
+    parse_interval,
+    turkish_lower,
+)
 
 
 def test_parse_interval_for_range_date():

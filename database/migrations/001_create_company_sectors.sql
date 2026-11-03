@@ -1,4 +1,4 @@
-CREATE TABLE metadata.company_sectors (
+CREATE TABLE IF NOT EXISTS  metadata.company_sectors (
     company_id BIGINT NOT NULL,
     sector_name TEXT NOT NULL,
 

@@ -1,3 +1,4 @@
+from services import company_loader
 from services.company_loader import resolve_price_symbols, resolve_symbols
 from services.update_company_info import (
     consolidate_company_info_by_oid,
@@ -73,33 +74,27 @@ def test_unverified_duplicate_oid_is_not_guessed_or_removed():
     assert result == records
 
 
-def test_resolve_symbols_collapses_alias_and_canonical_to_one_symbol(tmp_path):
-    path = tmp_path / "company_info.json"
-    path.write_text(
-        '{"QNBTR": {"mkkMemberOid": "oid-1", "symbolAliases": ["FIN"], '
-        '"kapMemberTitle": "QNB", "Website": "", "cityName": "", '
-        '"Sectors": [], "Indexes": [], "activityField": "", '
-        '"paidInCapital": 1, "capitalCeiling": 1, "numSharesOutstanding": 1, '
-        '"capitalDetails": {}}}',
-        encoding="utf-8",
+def test_resolve_symbols_collapses_alias_and_canonical_to_one_symbol(monkeypatch):
+    monkeypatch.setattr(
+        company_loader,
+        "_load_company_records",
+        lambda: {"QNBTR": {"symbolAliases": ["FIN"]}},
     )
+    assert resolve_symbols(["FIN", "QNBTR"]) == ["QNBTR"]
 
-    assert resolve_symbols(["FIN", "QNBTR"], path) == ["QNBTR"]
 
-
-def test_price_symbol_resolution_preserves_distinct_share_classes(tmp_path):
-    path = tmp_path / "company_info.json"
-    path.write_text(
-        '{"ISCTR": {"mkkMemberOid": "oid-1", "symbolAliases": ["ISATR"], '
-        '"shareClasses": [{"symbol": "ISATR"}, {"symbol": "ISCTR"}], '
-        '"kapMemberTitle": "IS", "Website": "", "cityName": "", '
-        '"Sectors": [], "Indexes": [], "activityField": "", '
-        '"paidInCapital": 1, "capitalCeiling": 1, "numSharesOutstanding": 1, '
-        '"capitalDetails": {}}}',
-        encoding="utf-8",
+def test_price_symbol_resolution_preserves_distinct_share_classes(monkeypatch):
+    monkeypatch.setattr(
+        company_loader,
+        "_load_company_records",
+        lambda: {
+            "ISCTR": {
+                "symbolAliases": ["ISATR"],
+                "shareClasses": [{"symbol": "ISATR"}, {"symbol": "ISCTR"}],
+            }
+        },
     )
-
-    assert resolve_price_symbols(["ISATR", "ISCTR"], path) == ["ISATR", "ISCTR"]
+    assert resolve_price_symbols(["ISATR", "ISCTR"]) == ["ISATR", "ISCTR"]
 
 
 def test_market_instrument_parser_preserves_blank_listing_date_cell():

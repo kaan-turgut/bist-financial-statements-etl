@@ -31,15 +31,6 @@ migration.ipynb
 .coverage
 htmlcov/
 
-# SQLite databases
-*.db
-*.sqlite
-*.sqlite3
-database_backups/
-*.db-journal
-*.db-shm
-*.db-wal
-
 # Downloaded and generated financial data
 financial_statements/
 

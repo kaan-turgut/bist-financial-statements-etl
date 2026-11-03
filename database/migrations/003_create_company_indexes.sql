@@ -1,4 +1,4 @@
-CREATE TABLE metadata.company_indexes (
+CREATE TABLE IF NOT EXISTS metadata.company_indexes (
     company_id BIGINT NOT NULL,
     index_name TEXT NOT NULL,
 

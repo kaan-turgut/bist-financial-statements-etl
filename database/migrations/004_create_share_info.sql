@@ -1,4 +1,4 @@
-CREATE TABLE metadata.share_info (
+CREATE TABLE IF NOT EXISTS metadata.share_info (
 
 	-- Relationship to the parent company
 	company_id BIGINT NOT NULL,

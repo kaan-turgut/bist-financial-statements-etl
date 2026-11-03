@@ -1,37 +1,14 @@
-import json
+"""Load and resolve company identifiers from PostgreSQL metadata."""
 
 from models.company import Company
-from paths import DATA_MAPPINGS_DIR
+from services.metadata_store import connect_metadata_db, load_company_records
 
 
-def load_companies(json_path=DATA_MAPPINGS_DIR / "company_info.json"):
-    with open(json_path, encoding="utf-8") as f:
-        company_info = json.load(f)
-
-    companies = {}
-    seen_oids = {}
-
-    for symbol, data in company_info.items():
-        oid = data.get("mkkMemberOid")
-        if oid in seen_oids:
-            raise ValueError(
-                f"Duplicate MKK OID {oid} in company_info.json for "
-                f"{seen_oids[oid]} and {symbol}. Consolidate the records first."
-            )
-        seen_oids[oid] = symbol
-        companies[symbol] = Company.from_kap_data(symbol, data)
-
-    return companies
-
-
-def symbol_aliases(json_path=DATA_MAPPINGS_DIR / "company_info.json"):
-    with open(json_path, encoding="utf-8") as f:
-        company_info = json.load(f)
-
+def _symbol_aliases(company_records):
     aliases = {}
-    canonical_symbols = set(company_info)
-    for canonical, data in company_info.items():
-        for alias in data.get("symbolAliases", []):
+    canonical_symbols = set(company_records)
+    for canonical, data in company_records.items():
+        for alias in data.get("symbolAliases") or []:
             alias = alias.strip().upper()
             if alias in canonical_symbols and alias != canonical:
                 continue
@@ -42,13 +19,42 @@ def symbol_aliases(json_path=DATA_MAPPINGS_DIR / "company_info.json"):
     return aliases
 
 
-def resolve_symbols(symbols, json_path=DATA_MAPPINGS_DIR / "company_info.json"):
-    companies = load_companies(json_path)
-    aliases = symbol_aliases(json_path)
+def _load_company_records():
+    conn = connect_metadata_db()
+    try:
+        records = load_company_records(conn)
+    finally:
+        conn.close()
+    seen_oids = {}
+    for symbol, data in records.items():
+        oid = data.get("mkkMemberOid")
+        if oid in seen_oids:
+            raise ValueError(
+                f"Duplicate MKK OID {oid} in metadata.companies for "
+                f"{seen_oids[oid]} and {symbol}."
+            )
+        seen_oids[oid] = symbol
+    return records
+
+
+def load_companies():
+    return {
+        symbol: Company.from_kap_data(symbol, data)
+        for symbol, data in _load_company_records().items()
+    }
+
+
+def symbol_aliases():
+    return _symbol_aliases(_load_company_records())
+
+
+def resolve_symbols(symbols):
+    records = _load_company_records()
+    aliases = _symbol_aliases(records)
     resolved = []
     for symbol in symbols:
         normalized = symbol.strip().upper()
-        canonical = normalized if normalized in companies else aliases.get(normalized)
+        canonical = normalized if normalized in records else aliases.get(normalized)
         if canonical is None:
             raise ValueError(f"Unknown company symbol: {symbol}")
         if canonical not in resolved:
@@ -56,19 +62,17 @@ def resolve_symbols(symbols, json_path=DATA_MAPPINGS_DIR / "company_info.json"):
     return resolved
 
 
-def resolve_price_symbols(symbols, json_path=DATA_MAPPINGS_DIR / "company_info.json"):
+def resolve_price_symbols(symbols):
     """Resolve issuer aliases while preserving independently traded share classes."""
-    with open(json_path, encoding="utf-8") as f:
-        company_info = json.load(f)
-
-    aliases = symbol_aliases(json_path)
+    records = _load_company_records()
+    aliases = _symbol_aliases(records)
     traded_classes = {
         share_class.get("symbol", "").strip().upper()
-        for data in company_info.values()
-        for share_class in data.get("shareClasses", [])
+        for data in records.values()
+        for share_class in data.get("shareClasses") or []
         if share_class.get("symbol")
     }
-    canonical_symbols = set(company_info)
+    canonical_symbols = set(records)
     resolved = []
     for symbol in symbols:
         normalized = symbol.strip().upper()

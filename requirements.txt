@@ -1,6 +1,7 @@
 beautifulsoup4
 pandas
 requests
+psycopg[binary]>=3.2,<4
 Unidecode
 numpy
 

@@ -8,7 +8,7 @@
 
 BIST şirketlerinin KAP'ta yayımlanan finansal tablolarını indirip düzenli, dönemler arasında karşılaştırılabilir bir veri setine dönüştüren bir projedir. Amaç, farklı raporlardaki dağınık bilgileri tek tek aramak yerine şirketlerin finansal durumunu ve zaman içindeki değişimini inceleyebileceğiniz bir temel sunmaktır.
 
-Proje; gelir tablolarını, bilançoları, nakit akış tablolarını ve özkaynak değişim tablolarını işler. Enflasyon etkisini dikkate alan değerler, USD karşılıkları, son 12 aylık göstergeler ve finansal oranlar da üretir. Sonuçları Jupyter Notebook, SQLite veya destekleyen bir raporlama aracıyla inceleyebilirsiniz.
+Proje; gelir tablolarını, bilançoları, nakit akış tablolarını ve özkaynak değişim tablolarını işler. Enflasyon etkisini dikkate alan değerler, USD karşılıkları, son 12 aylık göstergeler ve finansal oranlar da üretir. Sonuçları PostgreSQL, Jupyter Notebook veya destekleyen bir raporlama aracıyla inceleyebilirsiniz.
 
 **Bu proje hisse fiyatı tahmini yapmaz ve yatırım tavsiyesi vermez.** Önemli analizleri mutlaka KAP'taki orijinal raporlarla karşılaştırın.
 
@@ -27,22 +27,20 @@ Finans öğrencileri, araştırmacılar ve şirket finansallarını kendi yönte
 - Günlük hisse fiyatlarını indirip finansal tablo verileriyle birlikte inceleyebilirsiniz. (Fiyatlar İş Yatırım web sitesinden gelir)
 - USD karşılıklarını, son 12 aylık toplamları ve hesaplanan finansal oranları sorgulayabilirsiniz.
 - Hazırlanan verileri kendi şirket karşılaştırmalarınızda, grafiklerinizde ve araştırmalarınızda kullanabilirsiniz.
-- SQLite veritabanını Jupyter Notebook'a veya uyumlu bir iş zekası aracına (Power BI, Tableau gibi) bağlayabilirsiniz.
+- PostgreSQL veritabanını Jupyter Notebook'a veya uyumlu bir iş zekası aracına (Power BI, Tableau gibi) bağlayabilirsiniz.
 
 ## Üretilen çıktılar
 
-Ana çıktı, proje klasöründeki `bist_data.db` dosyasıdır. Bu, tabloları sorgulanabilen lokal bir veritabanıdır. Başlıca tablolar:
+Ana çıktı, `bist_finance` PostgreSQL veritabanındaki Bronze/Silver/Gold tablolarıdır. Başlıca veri kümeleri:
 
 | Tablo | İçerik |
 | --- | --- |
-| `income_statement` | Gelir tablosu kalemleri ve türetilen dönem göstergeleri |
-| `balance_sheet` | Bilanço kalemleri |
-| `cash_flow` | Nakit akış kalemleri |
-| `equity_change` | Özkaynak değişim kalemleri |
-| `ratios` | Hesaplanan finansal oranlar |
-| `inflation_table` | Aylık tüketici enflasyonu verileri |
-| `usd_try_table` | USD/TRY aylık referans kurları |
-| `prices` | Günlük hisse fiyatları, işlem hacmi, piyasa değeri ve enflasyon düzeltmeli kapanış |
+| `bronze.statement_filings` ve `bronze.statement_rows` | KAP dosyalarından alınan kaynak kayıtlar |
+| `silver.financial_observations` | Seçilmiş ve temizlenmiş finansal tablo satırları |
+| `silver.monthly_macro_data` | Aylık enflasyon ve USD/TRY referans verileri |
+| `silver.daily_prices` | Günlük hisse fiyatları |
+| `gold.financial_values` ve `gold.financial_ratios` | Çeyreklik, TTM, enflasyona göre düzeltilmiş değerler ve oranlar |
+| `gold.price_series` | Enflasyona göre düzeltilmiş günlük kapanışlar |
 
 Finansal tablolardaki kalemler; şirket, yıl, çeyrek, kalem adı ve mümkün olduğunda rapordaki üst başlıklarıyla birlikte saklanır. Böylece aynı ada sahip kalemlerin farklı bölümlerde yer alması daha kolay ayırt edilir. Ayrıca nominal tutarlar, enflasyona göre düzeltilmiş tutarlar ve USD karşılıkları ayrı alanlarda bulunur.
 
@@ -59,6 +57,14 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
+
+Şirket bilgileri `bist_finance` adlı PostgreSQL veritabanındaki `metadata` şemasında saklanır. Bağlantıyı `BIST_FINANCE_DSN` ortam değişkeniyle tanımlayın; örneğin `dbname=bist_finance host=localhost user=YOUR_USER`. PostgreSQL metadata şemasını hazırladıktan sonra eski JSON kayıtlarını bir kez içe aktarın:
+
+```bash
+python -m services.import_company_metadata
+```
+
+Bu komut JSON dosyalarını silmez; yalnızca mevcut kayıtları PostgreSQL'e aktarır. Sonraki şirket güncellemeleri, finansal veriler ve sembol aramaları PostgreSQL'i kullanır.
 
 PowerShell sanal ortamı etkinleştirmeyi engellerse, `.\.venv\Scripts\python.exe` yolunu `python` yerine kullanabilirsiniz.
 
@@ -78,7 +84,7 @@ Ortamı hazırladıktan sonra, üç şirketin 2017 Q1 ile 2026 Q2 arasındaki ve
 python pipeline.py run --symbols THYAO TUPRS BIMAS --begin-year 2017 --begin-quarter 1 --end-year 2026 --end-quarter 2
 ```
 
-Bu komut referans verilerini yeniler, KAP arşivlerini indirir ve seçilen dönemleri veritabanına işler. Enflasyon hedefi, veritabanındaki en güncel ay olarak otomatik seçilir. Daha sonra `bist_data.db` dosyasını Jupyter Notebook veya bir SQLite görüntüleyiciyle açabilirsiniz.
+Bu komut PostgreSQL şemasını hazırlar, referans verilerini yeniler, KAP arşivlerini indirir ve seçilen dönemleri işler. Enflasyon hedefi, veritabanındaki en güncel ay olarak otomatik seçilir.
 
 ## İşlemleri ayrı ayrı çalıştırma
 
@@ -101,24 +107,16 @@ python pipeline.py update-prices --symbols THYAO TUPRS BIMAS --begin-date 2017-0
 python pipeline.py adjust-prices --price-level-year 2026 --price-level-month 6
 ```
 
-`run` komutu indirme ve referans verisi yenileme adımlarını varsayılan olarak yapar. Bu adımlar zaten tamamsa `--skip-download` veya `--skip-reference-data` seçeneklerini kullanabilirsiniz. Şirket simgelerini yazmazsanız listedeki tüm şirketler işleme alınır.
+`run` komutu PostgreSQL şemasını hazırlar, referans verilerini yeniler ve KAP arşivlerini indirir. Bu adımlar zaten tamamsa `--skip-download` veya `--skip-reference-data` seçeneklerini kullanabilirsiniz. Şirket simgelerini yazmazsanız PostgreSQL metadata tablosundaki tüm şirketler işleme alınır.
 
 Belirli bir enflasyon hedefi kullanmak isterseniz hem `--price-level-year` hem de `--price-level-month` seçeneklerini birlikte verin. Örneğin `--price-level-year 2026 --price-level-month 9`.
 
 ## Veri güvenliği ve kapsam
 
-- Veritabanı güncellenmeden önce mevcut veritabanının doğrulanmış bir kopyası `database_backups/` klasörüne kaydedilir. Dosya adında yedekleme zamanı bulunur.
-- İstenen bir şirket ve dönem için lokal rapor dosyası yoksa o dönemdeki mevcut veritabanı satırları korunur ve eksikler loglarda bildirilir. Hiç uygun dosya bulunamazsa veritabanı değiştirilmeden işlem durur.
+- Yeni finansal veriler tamamlanıp yayımlanmaya hazır olmadan mevcut PostgreSQL kayıtları silinmez; işlem başarısız olursa önceki etkin veriler korunur.
+- İstenen bir şirket ve dönem için lokal rapor dosyası yoksa o dönemdeki mevcut PostgreSQL kayıtları korunur ve eksikler loglarda bildirilir. Hiç uygun dosya bulunamazsa veritabanı değiştirilmeden işlem durur.
 - Başlangıç dönemi bitiş döneminden sonraysa komut herhangi bir işe başlamadan hata verir.
-- İndirilen dosyalar ve veri tabanı yedekleri otomatik silinmez. Disk alanını yönetmek için bunları kendiniz silebilirsiniz.
-
-Bir yedeği geri yüklemek için önce veritabanını kullanan Jupyter oturumlarını ve diğer uygulamaları kapatın. Ardından `database_backups/` içindeki geri yüklemek istediğiniz dosyanın tam adını kullanın:
-
-```bash
-python pipeline.py restore-backup --backup-file database_backups/YEDEK_DOSYASININ_TAM_ADI.db --confirm
-```
-
-Geri yükleme öncesinde şu anki veritabanı da yeni bir yedek olarak saklanır.
+- KAP arşivleri otomatik silinmez; disk alanını yönetmek için bunları ayrıca temizleyebilirsiniz.
 
 ## Veri kaynakları ve dikkat edilmesi gerekenler
 
@@ -129,17 +127,31 @@ Geri yükleme öncesinde şu anki veritabanı da yeni bir yedek olarak saklanır
 - Bazı finansal tablolar KAP'ta çeyrek içi değerler yerine tüm yıl için kümülatif değerler ile sunulur. Proje, uygun gelir tablosu değerlerini tek çeyrek değerine dönüştürür.
 - Kaynak raporların biçimi değişebilir; otomatik okuma her kalemi kusursuz tanımayabilir. Veritabanı analiz içindir, resmi raporun yerine geçmez.
 
+## PostgreSQL finansal veri akışı
+
+Şirket metaverisi PostgreSQL'de tutuluyor. Finansal veriler için eklenen medallion akışı KAP kaynaklarını `bronze` altında korur, seçilen ve temizlenen kayıtları `silver` altında yayımlar, çeyreklik değerleri, enflasyon düzeltmelerini, TTM toplamlarını ve oranları `gold` altında üretir. Her çalıştırma ve kalite kontrol sonucu `ops` şemasında izlenir. Yeni hesaplamalar ayrı sürüm olarak saklanır; `gold.current_financial_values`, `gold.current_financial_ratios` ve `gold.current_price_series` görünümleri en son yayımlanan sürümü gösterir.
+
+Tüm finansal ve fiyat verileri PostgreSQL'e yazılır. Ana CLI komutları PostgreSQL kullanır:
+
+```bash
+python pipeline.py migrate-postgres
+python pipeline.py update-reference-data
+python pipeline.py update-database --symbols THYAO TUPRS BIMAS --begin-year 2017 --begin-quarter 1 --end-year 2026 --end-quarter 2
+python pipeline.py update-prices --symbols THYAO TUPRS BIMAS --begin-date 2017-01-01 --end-date 2026-06-30
+python pipeline.py adjust-prices --price-level-year 2026 --price-level-month 6
+```
+
+İndirme ve finansal tabloları PostgreSQL'e işleme adımlarını tek seferde çalıştırmak için `run` komutunu kullanın. Hisse fiyatları ayrı bir komutla alınır. Önce `BIST_FINANCE_DSN` değişkeninin `bist_finance` veritabanına bağlandığını doğrulayın. Tabloları Jupyter'dan aynı PostgreSQL bağlantısıyla sorgulayabilirsiniz.
+
 ## Proje yapısı
 
 ```text
-data_mappings/          Şirket listesi ve rapor başlık eşleştirmeleri
-database_processing/    Enflasyon düzeltmesi, TTM, oranlar ve değişimler
+database/migrations/    PostgreSQL metadata ve medallion şemaları
 models/                 Şirket ve finansal tablo veri yapıları
-read_statements/        Rapor arşivlerini bulma, okuma ve kaydetme
-services/               İndirme ve referans verisi servisleri
+read_statements/        Rapor arşivlerini bulma, okuma ve seçme
+services/               PostgreSQL, indirme ve referans verisi servisleri
 tests/                  Otomatik kontroller
 pipeline.py             Komut satırı giriş noktası
-bist_data.db            Oluşturulan lokal veritabanı
 ```
 
 ## Geliştirici notu
@@ -158,7 +170,7 @@ Testleri çalıştırmak için proje klasöründe `python -m pytest` komutunu ku
 
 This project turns financial statements published by BIST companies on KAP into an organized dataset that is easier to compare across reporting periods. Instead of searching through separate reports one by one, you get a consistent starting point for exploring a company’s financial position and how it changes over time.
 
-The project processes income statements, balance sheets, cash flow statements, and statements of changes in equity. It also calculates inflation-adjusted values, USD equivalents, totals for the most recent four quarters, and financial ratios. You can explore the results in a Jupyter notebook, SQLite, or a compatible reporting tool.
+The project processes income statements, balance sheets, cash flow statements, and statements of changes in equity. It also calculates inflation-adjusted values, USD equivalents, totals for the most recent four quarters, and financial ratios. You can explore the results in PostgreSQL, a Jupyter notebook, or a compatible reporting tool.
 
 **This project does not predict stock prices or provide investment advice.** Automated processing can make mistakes, so check important findings against the original KAP reports.
 
@@ -177,22 +189,20 @@ It is intended for finance students, researchers, and anyone who wants to explor
 - Download daily historical prices and explore them alongside the processed financial statements.
 - Query USD equivalents, trailing-twelve-month totals, and calculated financial ratios.
 - Use the prepared data for company comparisons, charts, and your own research.
-- Connect the SQLite database to a Jupyter notebook or compatible business-intelligence tool.
+- Connect PostgreSQL to a Jupyter notebook or compatible business-intelligence tool.
 
 ## Outputs
 
-The main output is `bist_data.db` in the project folder, a local database whose tables you can query. Its main tables are:
+The main output is the Bronze/Silver/Gold data in the `bist_finance` PostgreSQL database. Key datasets include:
 
 | Table | Contents |
 | --- | --- |
-| `income_statement` | Income statement items and derived period measures, including recent-four-quarter totals |
-| `balance_sheet` | Balance sheet items |
-| `cash_flow` | Cash flow items |
-| `equity_change` | Changes in equity |
-| `ratios` | Calculated financial ratios |
-| `inflation_table` | Monthly consumer inflation data |
-| `usd_try_table` | Monthly USD/TRY reference rates |
-| `prices` | Daily prices, trading volume, market value, and inflation-adjusted closing prices |
+| `bronze.statement_filings` and `bronze.statement_rows` | Raw KAP filing records |
+| `silver.financial_observations` | Selected, cleaned statement observations |
+| `silver.monthly_macro_data` | Monthly CPI and USD/TRY reference data |
+| `silver.daily_prices` | Daily historical prices |
+| `gold.financial_values` and `gold.financial_ratios` | Quarterly values, TTM totals, inflation adjustments, and ratios |
+| `gold.price_series` | Inflation-adjusted daily closing prices |
 
 Statement rows include the company, year, quarter, item name, and, when recognized, the item’s parent headings. This helps distinguish same-named items that appear in different sections. Nominal amounts, inflation-adjusted amounts, and USD equivalents are stored separately.
 
@@ -222,13 +232,21 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
+Company metadata is stored in the `metadata` schema of the PostgreSQL database `bist_finance`. Set `BIST_FINANCE_DSN` to your PostgreSQL connection details (for example, `dbname=bist_finance host=localhost user=YOUR_USER`), then import your existing JSON records once:
+
+```bash
+python -m services.import_company_metadata
+```
+
+This imports the records without deleting the JSON files. The pipeline uses PostgreSQL for company metadata and all financial, price, and reference data.
+
 Once the environment is ready, download and process THYAO, TUPRS, and BIMAS from 2017 Q1 through 2026 Q2:
 
 ```bash
 python pipeline.py run --symbols THYAO TUPRS BIMAS --begin-year 2017 --begin-quarter 1 --end-year 2026 --end-quarter 2
 ```
 
-This refreshes reference data, downloads KAP archives, and processes the selected periods into the database. The inflation target defaults to the latest month stored in the database. You can then open `bist_data.db` in a Jupyter notebook or SQLite viewer.
+This prepares the PostgreSQL schema, refreshes reference data, downloads KAP archives, and processes the selected periods. The inflation target defaults to the latest month stored in PostgreSQL.
 
 ## Run individual steps
 
@@ -257,18 +275,9 @@ To use a specific inflation target, provide both `--price-level-year` and `--pri
 
 ## Data protection and behavior
 
-- Before updating the database, the pipeline creates a verified snapshot in `database_backups/`. Its filename includes the backup time.
-- If a local report is missing for a requested company-period, existing database rows for that period are preserved and the gap is logged. If no matching files are found at all, the command stops without changing the database.
+- New financial data is committed to PostgreSQL only after parsing and staging succeeds. An interrupted run preserves the previously active data.
+- If a local report is missing for a requested company-period, the existing PostgreSQL data for that period is preserved and the gap is logged.
 - Reversed start and end periods are rejected before work begins.
-- Backups are not automatically deleted. Remove old snapshots yourself when you are sure you no longer need them.
-
-To restore a snapshot, first close Jupyter sessions and other applications connected to the database. Then use the exact filename from `database_backups/`:
-
-```bash
-python pipeline.py restore-backup --backup-file database_backups/EXACT_BACKUP_FILENAME.db --confirm
-```
-
-The current database is saved as another snapshot before the selected one is restored.
 
 ## Data sources and limitations
 
@@ -280,17 +289,31 @@ The current database is saved as another snapshot before the selected one is res
 - KAP report layouts can change, and automatic parsing may not recognize every item perfectly. The database supports analysis; it does not replace the official reports.
 - Inflation and exchange-rate adjustments are limited by the source frequency and monthly reference method. They do not represent a company’s actual foreign-currency transactions or the inflation applicable on each item’s transaction date.
 
+## PostgreSQL financial pipeline
+
+Company metadata already lives in PostgreSQL. The new medallion path keeps KAP source records in `bronze`, publishes selected and cleaned observations in `silver`, and builds quarterly values, inflation adjustments, TTM totals, and ratios in `gold`. Run history and data-quality checks are tracked in `ops`. Each calculation is stored as a separate generation; `gold.current_financial_values`, `gold.current_financial_ratios`, and `gold.current_price_series` expose the latest published generation.
+
+All financial and price data is stored in PostgreSQL. The primary commands are:
+
+```bash
+python pipeline.py migrate-postgres
+python pipeline.py update-reference-data
+python pipeline.py update-database --symbols THYAO TUPRS BIMAS --begin-year 2017 --begin-quarter 1 --end-year 2026 --end-quarter 2
+python pipeline.py update-prices --symbols THYAO TUPRS BIMAS --begin-date 2017-01-01 --end-date 2026-06-30
+python pipeline.py adjust-prices --price-level-year 2026 --price-level-month 6
+```
+
+Use `run` to download and process financial statements in one run. Historical prices are fetched separately. Confirm that `BIST_FINANCE_DSN` points to the `bist_finance` database before running these commands. Query the tables from Jupyter using the same PostgreSQL connection settings.
+
 ## Project layout
 
 ```text
-data_mappings/          Company list and statement-label mappings
-database_processing/    Inflation adjustment, TTM, ratios, and changes
+database/migrations/    PostgreSQL metadata and medallion schemas
 models/                 Company and financial-statement data structures
-read_statements/        Finding, reading, and saving report archives
-services/               Download and reference-data services
+read_statements/        Finding, reading, and selecting report archives
+services/               PostgreSQL, download, and reference-data services
 tests/                  Automated checks
 pipeline.py             Command-line entry point
-bist_data.db            Generated local database
 ```
 
 ## For contributors

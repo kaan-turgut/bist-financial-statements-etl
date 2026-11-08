@@ -6,6 +6,10 @@ import logging
 import math
 import time
 from contextvars import ContextVar
+from decimal import Decimal
+from numbers import Real
+
+import pandas as pd
 
 from services.metadata_store import connect_metadata_db
 from services.postgres_financial_pipeline import (
@@ -32,6 +36,19 @@ def _number_or_none(value):
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _json_safe_value(value):
+    """Convert pandas missing scalars and non-finite numbers to JSON null."""
+    if isinstance(value, dict):
+        return {key: _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    if pd.isna(value):
+        return None
+    if isinstance(value, (Real, Decimal)) and not math.isfinite(value):
+        return None
+    return value
 
 
 def update_prices_postgres(symbols, begin_date, end_date, *, sleep_seconds=1.5, rate_limit_delay=120):
@@ -74,8 +91,8 @@ def update_prices_postgres(symbols, begin_date, end_date, *, sleep_seconds=1.5, 
                             "capital": record.get("capital"),
                         }
                         cleaned = {name: _number_or_none(value) for name, value in values.items()}
-                        payload = {key: (None if value is None else value) for key, value in record.items()}
-                        payload_json = json.dumps(payload, default=str, ensure_ascii=False, sort_keys=True)
+                        payload = _json_safe_value(record.to_dict())
+                        payload_json = json.dumps(payload, default=str, ensure_ascii=False, sort_keys=True, allow_nan=False)
                         source_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
                         conn.execute(
                             """INSERT INTO bronze.price_observations

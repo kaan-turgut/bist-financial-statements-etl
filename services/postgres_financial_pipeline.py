@@ -5,8 +5,11 @@ import json
 import logging
 import time
 import zipfile
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor
 from contextvars import ContextVar
 from datetime import UTC, datetime
+from multiprocessing import get_context
 from pathlib import Path
 
 import pandas as pd
@@ -14,18 +17,39 @@ import pandas as pd
 from paths import FINANCIAL_STATEMENTS_DIR, PROJECT_ROOT
 from read_statements.obtain_paths import obtain_statement_paths
 from read_statements.parse_statement import parse_statement
+from services.financial_ratios import (
+    calculate_financial_ratios,
+    calculate_ratio_changes,
+)
 from services.metadata_store import connect_metadata_db
 
 logger = logging.getLogger(__name__)
 _GOLD_RUN_ID = ContextVar("gold_run_id", default=None)
 
-MIGRATION = PROJECT_ROOT / "database" / "migrations" / "007_create_medallion_architecture.sql"
+MIGRATIONS = (
+    ("007", "007_create_medallion_architecture.sql"),
+    ("008", "008_remove_financial_value_ttm.sql"),
+    ("009", "009_create_eps_observations.sql"),
+    ("010", "010_financial_measurement_context.sql"),
+    ("011", "011_price_earnings.sql"),
+    ("012", "012_structured_eps_sources.sql"),
+    ("013", "013_eps_coverage.sql"),
+    ("014", "014_eps_refresh_snapshots.sql"),
+)
 TABLE_TYPES = {
     "Income Statement": "income_statement",
     "Balance Sheet": "balance_sheet",
     "Statement of Cash Flows": "cash_flow",
     "Statement of Change in Equity": "equity_change",
 }
+CASH_BALANCE_ITEMS = (
+    "dönem başı nakit ve nakit benzerleri",
+    "dönem sonu nakit ve nakit benzerleri",
+    "dönem başındaki nakit ve nakde eşdeğer varlıklar",
+    "dönem sonundaki nakit ve nakde eşdeğer varlıklar",
+    "dönem başındaki nakit ve nakit benzerleri mevcudu",
+    "dönem sonundaki nakit ve nakit benzerleri mevcudu",
+)
 
 
 def _null_if_missing(value):
@@ -33,21 +57,25 @@ def _null_if_missing(value):
 
 
 def apply_medallion_migration():
-    """Apply the versioned medallion DDL once, in a single transaction."""
-    sql = MIGRATION.read_text(encoding="utf-8")
+    """Apply pending medallion migrations in order, in a single transaction."""
+    applied = False
     with connect_metadata_db() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('bist_finance_medallion_migrations'))")
         migration_table = conn.execute(
             "SELECT to_regclass('ops.schema_migrations') AS table_name"
         ).fetchone()["table_name"]
-        if migration_table and conn.execute(
-            "SELECT 1 FROM ops.schema_migrations WHERE version = '007'"
-        ).fetchone():
-            logger.info("Medallion migration 007 is already applied")
-            return False
-        conn.execute(sql)
-        conn.execute("INSERT INTO ops.schema_migrations (version) VALUES ('007') ON CONFLICT DO NOTHING")
-    logger.info("Applied medallion migration 007")
-    return True
+        for version, filename in MIGRATIONS:
+            if migration_table and conn.execute(
+                "SELECT 1 FROM ops.schema_migrations WHERE version = %s", (version,)
+            ).fetchone():
+                continue
+            sql = (PROJECT_ROOT / "database" / "migrations" / filename).read_text(encoding="utf-8")
+            conn.execute(sql)
+            conn.execute("INSERT INTO ops.schema_migrations (version) VALUES (%s)", (version,))
+            migration_table = True
+            applied = True
+            logger.info("Applied medallion migration %s", version)
+    return applied
 
 
 def _mark_run_interrupted(run_id):
@@ -81,7 +109,7 @@ def _choose_active_filing_versions(candidates):
             row["company_id"], row["statement_type"],
             row["fiscal_year"], row["fiscal_quarter"],
         )
-        filing_id = row["filing_id"]
+        filing_id = _null_if_missing(row["filing_id"])
         rank = (
             report_kind_rank.get(row["report_kind"], 2),
             -(int(filing_id) if filing_id is not None else -1),
@@ -184,10 +212,13 @@ def _store_silver_rows(conn, company_id, filing_keys, clean_frame, run_id):
             start = datetime.strptime(dates[0], "%d.%m.%Y").replace(tzinfo=UTC).date()
             end = datetime.strptime(dates[-1], "%d.%m.%Y").replace(tzinfo=UTC).date()
             quarter = int(row["quarter"])
+            # 1234 denotes an annual income statement, not every YTD report.
+            # Keep the filing's fiscal quarter, including non-calendar fiscal years.
             is_cumulative = quarter == 1234 or (
-                type_name == "cash_flow" and (end - start).days > 100
+                type_name in {"cash_flow", "income_statement"} and (quarter == 1 or (end - start).days > 100)
+                and row["item"] not in CASH_BALANCE_ITEMS
             )
-            if is_cumulative:
+            if quarter == 1234:
                 quarter = 4
             path_parts = [part.strip() for part in str(row["line_item_path"] or "").split(" > ") if part.strip()]
             subsection = path_parts[-2] if len(path_parts) > 2 else None
@@ -221,8 +252,87 @@ def _clean_frame(frame):
     return holder.df
 
 
-def ingest_statements_postgres(companies, begin_year, begin_quarter, end_year, end_quarter):
+def _activate_filing_versions(conn, candidates, run_id):
+    """Publish selected filings, retaining source and processing history."""
+    # An old Q2/Q3 cash-flow filing may still occupy the erroneous Q4 slot.
+    # Remove that pointer only after its actual period has replacement rows.
+    conn.execute("""DELETE FROM ops.active_filing_versions a
+        USING bronze.statement_filings f
+        WHERE a.filing_key=f.filing_key AND a.statement_type='cash_flow'
+          AND (a.fiscal_year,a.fiscal_quarter)<>(f.fiscal_year,f.fiscal_quarter)
+          AND EXISTS (
+            SELECT 1 FROM silver.financial_observations s
+            WHERE s.processing_run_id=%s AND s.company_id=a.company_id
+              AND s.statement_type='cash_flow' AND s.fiscal_year=f.fiscal_year
+              AND s.fiscal_quarter=f.fiscal_quarter)""", (run_id,))
+    versions = _choose_active_filing_versions(candidates)
+    logger.info("Activating %s selected filing versions", len(versions))
+    for row in versions:
+        conn.execute("""INSERT INTO ops.active_filing_versions
+            (company_id,statement_type,fiscal_year,fiscal_quarter,filing_key,processing_run_id)
+            VALUES (%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (company_id,statement_type,fiscal_year,fiscal_quarter)
+            DO UPDATE SET filing_key=EXCLUDED.filing_key,
+                          processing_run_id=EXCLUDED.processing_run_id,activated_at=now()""",
+            (row["company_id"], row["statement_type"], row["fiscal_year"],
+             row["fiscal_quarter"], row["filing_key"], row["processing_run_id"]))
+
+
+def _parse_statement_frame(company, path):
+    """Spawn-safe worker: parse a local archive without opening a database connection."""
+    return parse_statement(path, company).df.copy()
+
+
+def _validate_parse_workers(parse_workers):
+    if type(parse_workers) is not int or parse_workers < 1:
+        raise ValueError("parse_workers must be a positive integer.")
+
+
+def _parse_statement_frames(paths, parse_workers):
+    """Keep source order and at most two tasks per worker in flight."""
+    _validate_parse_workers(parse_workers)
+    workers = min(parse_workers, len(paths))
+    logger.info("Parsing %s statement files with %s worker process(es)", len(paths), workers)
+    if workers <= 1:
+        for company, path in paths:
+            logger.info("Parsing %s", path)
+            yield company, path, _parse_statement_frame(company, path)
+        return
+
+    # Spawn avoids inheriting database connections or other parent process state.
+    with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
+        pending = deque()
+        remaining = iter(paths)
+
+        def submit_next():
+            task = next(remaining, None)
+            if task is not None:
+                company, path = task
+                pending.append((company, path, executor.submit(_parse_statement_frame, company, path)))
+
+        try:
+            for _ in range(workers * 2):
+                submit_next()
+            completed = 0
+            while pending:
+                company, path, future = pending.popleft()
+                try:
+                    frame = future.result()
+                except Exception as exc:
+                    raise RuntimeError(f"Failed to parse statement {path}") from exc
+                completed += 1
+                logger.info("Parsed %s/%s: %s", completed, len(paths), path)
+                submit_next()
+                yield company, path, frame
+        finally:
+            for _, _, future in pending:
+                future.cancel()
+
+
+def ingest_statements_postgres(companies, begin_year, begin_quarter, end_year, end_quarter,
+                               *, parse_workers=2):
     """Parse local KAP archives into immutable Bronze and canonical Silver rows."""
+    _validate_parse_workers(parse_workers)
     paths_by_symbol = {
         company.symbol: obtain_statement_paths(
             FINANCIAL_STATEMENTS_DIR / company.symbol,
@@ -238,11 +348,7 @@ def ingest_statements_postgres(companies, begin_year, begin_quarter, end_year, e
         len(paths), companies_with_files, len(companies),
     )
 
-    parsed = []
-    for company, path in paths:
-        logger.info("Parsing %s", path)
-        statement = parse_statement(path, company)
-        parsed.append((company, path, statement.df.copy()))
+    parsed = list(_parse_statement_frames(paths, parse_workers))
 
     logger.info("Cleaning and selecting canonical rows from %s parsed files", len(parsed))
     canonical_parts = []
@@ -261,6 +367,7 @@ def ingest_statements_postgres(companies, begin_year, begin_quarter, end_year, e
         run_id = _run_start(conn, "financial_statement_ingestion", {
             "symbols": [company.symbol for company in companies],
             "begin": [begin_year, begin_quarter], "end": [end_year, end_quarter],
+            "parse_workers": min(parse_workers, len(paths)),
         })
         try:
             company_ids = {
@@ -284,6 +391,17 @@ def ingest_statements_postgres(companies, begin_year, begin_quarter, end_year, e
                     ] if not canonical.empty else canonical
                     selected = selected.drop_duplicates()
                     _store_silver_rows(conn, company_id, keys, selected, run_id)
+                    if not selected.empty:
+                        from services.financial_report_context import (
+                            read_report_context,
+                            store_context,
+                        )
+
+                        end = pd.to_datetime(selected['date'].str.split(' - ').str[-1], format='%d.%m.%Y').max().date()
+                        context = read_report_context(path, int(raw['quarter'].iloc[0]), end)
+                        for table_name in selected['table'].unique():
+                            if table_name in keys:
+                                store_context(conn, keys[table_name], run_id, context)
                     if index % 25 == 0 or index == len(parsed):
                         logger.info("Stored Bronze/Silver records for %s/%s files", index, len(parsed))
                 except Exception:
@@ -298,41 +416,7 @@ def ingest_statements_postgres(companies, begin_year, begin_quarter, end_year, e
                    WHERE s.processing_run_id=%s""",
                 (run_id,),
             ).fetchall()
-            active_versions = _choose_active_filing_versions(candidates)
-            logger.info("Activating %s selected filing versions", len(active_versions))
-            for row in active_versions:
-                conn.execute(
-                    """INSERT INTO ops.active_filing_versions
-                       (company_id,statement_type,fiscal_year,fiscal_quarter,filing_key,processing_run_id)
-                       VALUES (%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (company_id,statement_type,fiscal_year,fiscal_quarter)
-                       DO UPDATE SET filing_key=EXCLUDED.filing_key,
-                                     processing_run_id=EXCLUDED.processing_run_id,activated_at=now()""",
-                    (row["company_id"], row["statement_type"], row["fiscal_year"],
-                     row["fiscal_quarter"], row["filing_key"], row["processing_run_id"]),
-                )
-            conn.execute(
-                """DELETE FROM silver.financial_observations s
-                   USING ops.active_filing_versions a
-                   WHERE a.processing_run_id=%s
-                     AND s.company_id=a.company_id
-                     AND s.statement_type=a.statement_type
-                     AND s.fiscal_year=a.fiscal_year
-                     AND s.fiscal_quarter=a.fiscal_quarter
-                     AND (s.processing_run_id<>a.processing_run_id OR s.filing_key<>a.filing_key)""",
-                (run_id,),
-            )
-            conn.execute(
-                """DELETE FROM bronze.statement_filings f
-                   USING ops.active_filing_versions a
-                   WHERE a.processing_run_id=%s
-                     AND f.company_id=a.company_id
-                     AND f.statement_type=a.statement_type
-                     AND f.fiscal_year=a.fiscal_year
-                     AND f.fiscal_quarter=a.fiscal_quarter
-                     AND f.filing_key<>a.filing_key""",
-                (run_id,),
-            )
+            _activate_filing_versions(conn, candidates, run_id)
             _run_finish(conn, run_id)
             conn.commit()
         except KeyboardInterrupt:
@@ -348,8 +432,9 @@ def ingest_statements_postgres(companies, begin_year, begin_quarter, end_year, e
 
 
 def _calculate_gold_financials_postgres(price_level_year, price_level_month, *, companies=None):
-    """Build quarterly values and rolling TTM totals from Silver observations."""
+    """Build quarterly financial values and ratios with internal trailing inputs."""
     with connect_metadata_db() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('bist_finance_price_earnings'))")
         calculation_started = time.perf_counter()
         run_id = _run_start(conn, "gold_financial_calculation", {
             "price_level": [price_level_year, price_level_month],
@@ -357,243 +442,53 @@ def _calculate_gold_financials_postgres(price_level_year, price_level_month, *, 
         })
         _GOLD_RUN_ID.set(run_id)
         conn.commit()
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('bist_finance_price_earnings'))")
         logger.info(
             "Gold calculation run %s started (price level %s-%02d)",
             run_id, price_level_year, price_level_month,
         )
-        company_filter = ""
-        params = []
-        if companies:
-            company_filter = " AND s.company_id = ANY(%s)"
-            symbols = [company.symbol for company in companies]
-            company_ids = [row["company_id"] for row in conn.execute(
-                "SELECT company_id FROM metadata.companies WHERE symbol = ANY(%s)", (symbols,)
-            ).fetchall()]
-            params.append(company_ids)
-        params.extend((price_level_year, price_level_month))
-        stage_started = time.perf_counter()
-        logger.info("Gold stage 1/6: calculating quarterly, YTD, inflation-adjusted, and USD values")
-        conn.execute("""WITH silver_candidates AS (
-            SELECT s.*,
-                   ROW_NUMBER() OVER (
-                     PARTITION BY company_id,statement_type,fiscal_year,fiscal_quarter,
-                                  line_item_path,item,source_column_id
-                     ORDER BY is_cumulative,period_start DESC,source_row_id NULLS LAST,filing_key
-                   ) AS candidate_rank
-            FROM silver.current_financial_observations s WHERE true""" + company_filter + """
-        ), normalized AS (
-            SELECT s.*,
-                   CASE WHEN s.is_cumulative THEN
-                       s.amount - COALESCE(
-                         (SELECT p.amount FROM silver_candidates p
-                          WHERE p.company_id=s.company_id AND p.statement_type=s.statement_type
-                            AND p.fiscal_year=s.fiscal_year AND p.fiscal_quarter < s.fiscal_quarter
-                            AND p.is_cumulative AND p.line_item_path=s.line_item_path AND p.item=s.item
-                            AND p.candidate_rank=1
-                            AND p.source_column_id IS NOT DISTINCT FROM s.source_column_id
-                          ORDER BY p.fiscal_quarter DESC LIMIT 1),
-                         (SELECT CASE WHEN COUNT(DISTINCT p.fiscal_quarter)=s.fiscal_quarter-1
-                                      THEN SUM(p.amount) END
-                          FROM silver_candidates p
-                          WHERE p.company_id=s.company_id AND p.statement_type=s.statement_type
-                            AND p.fiscal_year=s.fiscal_year AND p.fiscal_quarter < s.fiscal_quarter
-                            AND p.candidate_rank=1
-                            AND p.line_item_path=s.line_item_path AND p.item=s.item
-                            AND p.source_column_id IS NOT DISTINCT FROM s.source_column_id),
-                         CASE WHEN s.fiscal_quarter=1 THEN 0 END)
-                       ELSE s.amount END AS quarter_amount
-            FROM silver_candidates s WHERE s.candidate_rank=1
-        ), with_ytd AS (
-            SELECT n.*,
-                   CASE WHEN statement_type IN ('income_statement','cash_flow') THEN
-                     SUM(quarter_amount) OVER (PARTITION BY company_id, statement_type, fiscal_year,
-                       line_item_path, item, source_column_id ORDER BY fiscal_quarter)
-                     ELSE quarter_amount END AS ytd_amount
-            FROM normalized n
-        ), cpi_index AS (
-            SELECT observation_date,
-                   EXP(SUM(LN(1 + value / 100.0)) OVER (ORDER BY observation_date)) AS price_index
-            FROM silver.monthly_macro_data WHERE series_code = 'CPI_MONTHLY_RATE'
-        ), target_index AS (
-            SELECT target.base_date,
-                   (SELECT price_index FROM cpi_index
-                     WHERE observation_date = target.base_date) AS price_index
-            FROM (SELECT make_date(%s, %s, 1) AS base_date) target
-        ), enriched AS (
-            SELECT w.*,
-                   source_label.column_label,
-                   t.price_index / source_cpi.price_index AS inflation_factor,
-                   fx.value AS usd_try,
-                   t.base_date
-            FROM with_ytd w CROSS JOIN target_index t
-            LEFT JOIN LATERAL (
-                SELECT br.column_label
-                FROM bronze.statement_rows br
-                WHERE (w.source_row_id IS NOT NULL OR w.source_column_id IS NOT NULL)
-                  AND br.filing_key = w.filing_key
-                  AND br.source_row_id IS NOT DISTINCT FROM w.source_row_id
-                  AND br.source_column_id IS NOT DISTINCT FROM w.source_column_id
-                  AND br.column_label IS NOT NULL
-                ORDER BY br.source_row_number
-                LIMIT 1
-            ) source_label ON TRUE
-            LEFT JOIN cpi_index source_cpi
-              ON source_cpi.observation_date = make_date(w.fiscal_year, w.fiscal_quarter * 3, 1)
-            LEFT JOIN silver.monthly_macro_data fx
-              ON fx.series_code = 'USDTRY_MONTHLY_OPEN'
-             AND fx.observation_date = make_date(w.fiscal_year, w.fiscal_quarter * 3, 1)
+        from services.financial_values import (
+            calculate_financial_values,
+            calculate_value_changes,
         )
-        INSERT INTO gold.financial_values
-            (calculation_run_id, company_id, statement_type, fiscal_year, fiscal_quarter, line_item_path, item,
-             source_column_id, column_label, value_quarter, value_ytd, value_ttm, value_real, value_real_ttm,
-             value_usd, inflation_base_year, inflation_base_month)
-            SELECT %s, company_id, statement_type, fiscal_year, fiscal_quarter, line_item_path, item,
-                   source_column_id, column_label, quarter_amount, ytd_amount, NULL,
-                   quarter_amount * inflation_factor, NULL,
-                   CASE WHEN usd_try > 0 THEN quarter_amount / usd_try END,
-                   EXTRACT(YEAR FROM base_date)::integer,
-                   EXTRACT(MONTH FROM base_date)::smallint
-            FROM enriched
-            ON CONFLICT (calculation_run_id, company_id, statement_type, fiscal_year, fiscal_quarter,
-                         line_item_path, item, source_column_id)
-            DO UPDATE SET value_quarter=EXCLUDED.value_quarter, value_ytd=EXCLUDED.value_ytd,
-                          value_real=EXCLUDED.value_real, value_usd=EXCLUDED.value_usd,
-                          inflation_base_year=EXCLUDED.inflation_base_year,
-                          inflation_base_month=EXCLUDED.inflation_base_month,
-                          calculated_at=now()""", [*params, run_id])
-        logger.info("Gold stage 1/6 complete in %.1f seconds", time.perf_counter() - stage_started)
-        # No sums are published as TTM until all four consecutive quarters exist.
-        stage_started = time.perf_counter()
-        logger.info("Gold stage 2/6: calculating TTM values")
-        conn.execute("""WITH rolling AS (
-            SELECT g.calculation_run_id, g.company_id, g.statement_type, g.fiscal_year, g.fiscal_quarter,
-                   g.line_item_path, g.item, g.source_column_id,
-                   CASE WHEN COUNT(p.value_quarter)=4 THEN SUM(p.value_quarter) END AS ttm,
-                   CASE WHEN COUNT(p.value_real)=4 THEN SUM(p.value_real) END AS real_ttm
-            FROM gold.financial_values g
-            LEFT JOIN gold.financial_values p
-              ON p.calculation_run_id=g.calculation_run_id
-             AND p.company_id=g.company_id AND p.statement_type=g.statement_type
-             AND p.line_item_path=g.line_item_path AND p.item=g.item
-             AND p.source_column_id IS NOT DISTINCT FROM g.source_column_id
-             AND (p.fiscal_year*4+p.fiscal_quarter) BETWEEN
-                 (g.fiscal_year*4+g.fiscal_quarter-3) AND (g.fiscal_year*4+g.fiscal_quarter)
-            WHERE g.calculation_run_id=%s AND g.statement_type='income_statement'
-            GROUP BY g.calculation_run_id,g.company_id,g.statement_type,g.fiscal_year,g.fiscal_quarter,
-                     g.line_item_path,g.item,g.source_column_id
-        ) UPDATE gold.financial_values g SET value_ttm=r.ttm, value_real_ttm=r.real_ttm,
-                                               calculated_at=now()
-          FROM rolling r WHERE g.calculation_run_id=r.calculation_run_id
-            AND (g.company_id,g.statement_type,g.fiscal_year,g.fiscal_quarter,
-                                g.line_item_path,g.item,g.source_column_id) =
-                               (r.company_id,r.statement_type,r.fiscal_year,r.fiscal_quarter,
-                                r.line_item_path,r.item,r.source_column_id)""", (run_id,))
-        logger.info("Gold stage 2/6 complete in %.1f seconds", time.perf_counter() - stage_started)
 
         stage_started = time.perf_counter()
-        logger.info("Gold stage 3/6: calculating real-value year-over-year and quarter-over-quarter changes")
-        conn.execute("""WITH changes AS (
-            SELECT financial_value_id,
-                   value_real / NULLIF(LAG(value_real) OVER (
-                     PARTITION BY company_id,statement_type,line_item_path,item,source_column_id,fiscal_quarter
-                     ORDER BY fiscal_year),0)-1 AS yoy,
-                   value_real / NULLIF(LAG(value_real) OVER (
-                     PARTITION BY company_id,statement_type,line_item_path,item,source_column_id
-                     ORDER BY fiscal_year,fiscal_quarter),0)-1 AS qoq,
-                   value_real_ttm / NULLIF(LAG(value_real_ttm) OVER (
-                     PARTITION BY company_id,statement_type,line_item_path,item,source_column_id
-                     ORDER BY fiscal_year,fiscal_quarter),0)-1 AS ttm_qoq
-            FROM gold.financial_values WHERE calculation_run_id=%s
-        ) UPDATE gold.financial_values g SET value_real_yoy_change=c.yoy,
-             value_real_qoq_change=c.qoq,
-             value_real_ttm_qoq_change=CASE WHEN g.statement_type='income_statement' THEN c.ttm_qoq END,
-             calculated_at=now()
-          FROM changes c WHERE g.calculation_run_id=%s
-            AND g.financial_value_id=c.financial_value_id""", (run_id, run_id))
-        logger.info("Gold stage 3/6 complete in %.1f seconds", time.perf_counter() - stage_started)
+        logger.info("Gold stage 1/5: calculating values using source periods and measurement bases")
+        calculate_financial_values(conn, run_id, price_level_year, price_level_month, companies, CASH_BALANCE_ITEMS)
+        logger.info("Gold stage 1/5 complete in %.1f seconds", time.perf_counter() - stage_started)
+        conn.execute("ANALYZE gold.financial_values")
+        stage_started = time.perf_counter()
+        logger.info("Gold stage 2/5: calculating changes across exact adjacent periods")
+        calculate_value_changes(conn, run_id)
+        logger.info("Gold stage 2/5 complete in %.1f seconds", time.perf_counter() - stage_started)
 
         stage_started = time.perf_counter()
-        logger.info("Gold stage 4/6: calculating financial ratios")
-        conn.execute("""WITH facts AS (
-            SELECT company_id, fiscal_year, fiscal_quarter,
-                SUM(value_quarter) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='hasılat') AS sales_q,
-                SUM(value_ytd) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='hasılat') AS sales_ytd,
-                SUM(value_ttm) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='hasılat') AS sales_ttm,
-                SUM(value_quarter) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='satışların maliyeti') AS cogs_q,
-                SUM(value_ytd) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='satışların maliyeti') AS cogs_ytd,
-                SUM(value_ttm) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='satışların maliyeti') AS cogs_ttm,
-                SUM(value_quarter) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='esas faaliyet karı (zararı)') AS op_q,
-                SUM(value_ytd) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='esas faaliyet karı (zararı)') AS op_ytd,
-                SUM(value_ttm) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='esas faaliyet karı (zararı)') AS op_ttm,
-                SUM(value_quarter) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='dönem karı (zararı)') AS profit_q,
-                SUM(value_ytd) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='dönem karı (zararı)') AS profit_ytd,
-                SUM(value_ttm) FILTER (WHERE statement_type='income_statement' AND starts_with(line_item_path, 'profit or loss >') AND item='dönem karı (zararı)') AS profit_ttm,
-                SUM(value_quarter) FILTER (WHERE statement_type='balance_sheet' AND item='toplam dönen varlıklar') AS current_assets,
-                SUM(value_quarter) FILTER (WHERE statement_type='balance_sheet' AND item='toplam kısa vadeli yükümlülükler') AS current_liabilities,
-                SUM(value_quarter) FILTER (WHERE statement_type='balance_sheet' AND item='nakit ve nakit benzerleri') AS cash,
-                SUM(value_quarter) FILTER (WHERE statement_type='balance_sheet' AND item='toplam yükümlülükler') AS liabilities,
-                SUM(value_quarter) FILTER (WHERE statement_type='balance_sheet' AND item='toplam varlıklar') AS assets,
-                SUM(value_quarter) FILTER (WHERE statement_type='balance_sheet' AND item='toplam özkaynaklar') AS equity
-            FROM gold.financial_values WHERE calculation_run_id=%s
-            GROUP BY company_id, fiscal_year, fiscal_quarter
-        ), shares AS (
-            SELECT c.company_id, COALESCE(NULLIF(SUM(s.total_shares),0), c.paid_in_capital) AS shares
-            FROM metadata.companies c LEFT JOIN metadata.share_info s USING (company_id)
-            GROUP BY c.company_id, c.paid_in_capital
-        ), ratios AS (
-            SELECT f.company_id, f.fiscal_year, f.fiscal_quarter, v.ratio_code,
-                   v.q_value, v.ytd_value, v.ttm_value
-            FROM facts f LEFT JOIN shares sh USING (company_id)
-            CROSS JOIN LATERAL (VALUES
-              ('gross_margin', (sales_q-ABS(cogs_q))/NULLIF(sales_q,0), (sales_ytd-ABS(cogs_ytd))/NULLIF(sales_ytd,0), (sales_ttm-ABS(cogs_ttm))/NULLIF(sales_ttm,0)),
-              ('operating_margin', op_q/NULLIF(sales_q,0), op_ytd/NULLIF(sales_ytd,0), op_ttm/NULLIF(sales_ttm,0)),
-              ('return_on_assets', profit_q/NULLIF(assets,0), profit_ytd/NULLIF(assets,0), profit_ttm/NULLIF(assets,0)),
-              ('return_on_equity', profit_q/NULLIF(equity,0), profit_ytd/NULLIF(equity,0), profit_ttm/NULLIF(equity,0)),
-              ('current_ratio', current_assets/NULLIF(current_liabilities,0), NULL::numeric, NULL::numeric),
-              ('cash_ratio', cash/NULLIF(current_liabilities,0), NULL::numeric, NULL::numeric),
-              ('debt_ratio', liabilities/NULLIF(assets,0), NULL::numeric, NULL::numeric),
-              ('debt_to_equity_ratio', liabilities/NULLIF(equity,0), NULL::numeric, NULL::numeric),
-              ('asset_turnover_ratio', sales_q/NULLIF(assets,0), sales_ytd/NULLIF(assets,0), sales_ttm/NULLIF(assets,0)),
-              ('eps', profit_q/NULLIF(sh.shares,0), profit_ytd/NULLIF(sh.shares,0), profit_ttm/NULLIF(sh.shares,0))
-            ) AS v(ratio_code,q_value,ytd_value,ttm_value)
-        )
-        INSERT INTO gold.financial_ratios
-          (calculation_run_id,company_id,fiscal_year,fiscal_quarter,ratio_code,value_quarter,value_ytd,value_ttm)
-        SELECT %s,company_id,fiscal_year,fiscal_quarter,ratio_code,q_value,ytd_value,ttm_value FROM ratios
-        ON CONFLICT (calculation_run_id,company_id,fiscal_year,fiscal_quarter,ratio_code)
-        DO UPDATE SET value_quarter=EXCLUDED.value_quarter,value_ytd=EXCLUDED.value_ytd,
-                      value_ttm=EXCLUDED.value_ttm,calculated_at=now()""", (run_id, run_id))
-        logger.info("Gold stage 4/6 complete in %.1f seconds", time.perf_counter() - stage_started)
+        logger.info("Gold stage 3/5: calculating financial ratios")
+        calculate_financial_ratios(conn, run_id)
+        logger.info("Gold stage 3/5 complete in %.1f seconds", time.perf_counter() - stage_started)
 
         stage_started = time.perf_counter()
-        logger.info("Gold stage 5/6: calculating ratio changes")
-        conn.execute("""WITH changes AS (
-            SELECT company_id,fiscal_year,fiscal_quarter,ratio_code,
-                   value_quarter/NULLIF(LAG(value_quarter) OVER
-                     (PARTITION BY company_id,ratio_code,fiscal_quarter ORDER BY fiscal_year),0)-1 AS q_yoy,
-                   value_quarter/NULLIF(LAG(value_quarter) OVER
-                     (PARTITION BY company_id,ratio_code ORDER BY fiscal_year,fiscal_quarter),0)-1 AS q_qoq,
-                   value_ytd/NULLIF(LAG(value_ytd) OVER
-                     (PARTITION BY company_id,ratio_code,fiscal_quarter ORDER BY fiscal_year),0)-1 AS ytd_yoy,
-                   value_ttm/NULLIF(LAG(value_ttm) OVER
-                     (PARTITION BY company_id,ratio_code ORDER BY fiscal_year,fiscal_quarter),0)-1 AS ttm_qoq
-            FROM gold.financial_ratios WHERE calculation_run_id=%s
-        ) UPDATE gold.financial_ratios g SET quarter_yoy_change=c.q_yoy,
-             quarter_qoq_change=c.q_qoq,ytd_yoy_change=c.ytd_yoy,ttm_qoq_change=c.ttm_qoq
-          FROM changes c WHERE g.calculation_run_id=%s AND
-                             (g.company_id,g.fiscal_year,g.fiscal_quarter,g.ratio_code)=
-                               (c.company_id,c.fiscal_year,c.fiscal_quarter,c.ratio_code)""",
-            (run_id, run_id))
-        logger.info("Gold stage 5/6 complete in %.1f seconds", time.perf_counter() - stage_started)
+        logger.info("Gold stage 4/5: calculating ratio changes")
+        calculate_ratio_changes(conn, run_id)
+        logger.info("Gold stage 4/5 complete in %.1f seconds", time.perf_counter() - stage_started)
 
         stage_started = time.perf_counter()
-        logger.info("Gold stage 6/6: recording data-quality results and publishing active calculation run")
+        logger.info("Gold stage 5/5: recording data-quality results and publishing active calculation run")
         conn.execute("""INSERT INTO ops.data_quality_results
             (run_id,check_name,severity,affected_rows,details)
             SELECT %s,'financial_rows_missing_cpi','warning',COUNT(*),
                    jsonb_build_object('price_level_year',%s,'price_level_month',%s)
-            FROM gold.financial_values WHERE calculation_run_id=%s AND value_real IS NULL""",
+            FROM gold.financial_values WHERE calculation_run_id=%s AND value_quarter IS NOT NULL
+              AND measurement_basis<>'unknown' AND value_real IS NULL""",
             (run_id, price_level_year, price_level_month, run_id))
+        for name, condition in (
+            ('financial_report_basis_unknown', "measurement_basis='unknown'"),
+            ('financial_quarter_unavailable', 'value_quarter IS NULL'),
+            ('financial_fx_unavailable', 'value_quarter IS NOT NULL AND value_usd IS NULL'),
+        ):
+            conn.execute('''INSERT INTO ops.data_quality_results(run_id,check_name,severity,affected_rows)
+                SELECT %s,%s,'warning',COUNT(*) FROM gold.financial_values
+                WHERE calculation_run_id=%s AND '''+condition, (run_id,name,run_id))
         conn.execute("""DELETE FROM gold.financial_ratios old
             WHERE old.calculation_run_id<>%s
               AND EXISTS (
@@ -618,7 +513,7 @@ def _calculate_gold_financials_postgres(price_level_year, price_level_month, *, 
             ON CONFLICT (dataset_name,company_id) DO UPDATE
             SET run_id=EXCLUDED.run_id,activated_at=now()""", (run_id, run_id))
         _run_finish(conn, run_id)
-        logger.info("Gold stage 6/6 complete in %.1f seconds", time.perf_counter() - stage_started)
+        logger.info("Gold stage 5/5 complete in %.1f seconds", time.perf_counter() - stage_started)
     _GOLD_RUN_ID.set(None)
     logger.info(
         "Gold calculation run %s completed in %.1f seconds",
@@ -628,6 +523,7 @@ def _calculate_gold_financials_postgres(price_level_year, price_level_month, *, 
 
 
 def calculate_gold_financials_postgres(price_level_year, price_level_month, *, companies=None):
+    apply_medallion_migration()
     try:
         return _calculate_gold_financials_postgres(
             price_level_year, price_level_month, companies=companies
@@ -677,15 +573,20 @@ def resolve_postgres_inflation_period(requested=None):
 
 
 def update_database_postgres(companies, begin_year, begin_quarter, end_year, end_quarter,
-                              price_level=None):
+                              price_level=None, *, parse_workers=2):
+    _validate_parse_workers(parse_workers)
     if (begin_year * 4 + begin_quarter) > (end_year * 4 + end_quarter):
         raise ValueError("The begin period must not be later than the end period.")
     target = resolve_postgres_inflation_period(price_level)
     logger.info("Starting local statement ingestion; no downloads will be attempted")
     parsed_count = ingest_statements_postgres(
-        companies, begin_year, begin_quarter, end_year, end_quarter
+        companies, begin_year, begin_quarter, end_year, end_quarter,
+        parse_workers=parse_workers,
     )
     logger.info("Statement ingestion committed: %s files parsed", parsed_count)
+    from services.earnings_per_share import update_eps_postgres
+
+    update_eps_postgres(companies, rebuild_gold=False)
     logger.info("Starting Gold financial calculations")
     run_id = calculate_gold_financials_postgres(*target, companies=companies)
     logger.info("Gold financial calculations committed under run %s", run_id)

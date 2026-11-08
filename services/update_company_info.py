@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument(
         "--rate-limit-backoff",
         type=float,
-        default=60.0,
+        default=300.0,
         help="Base seconds for exponential retry delays after KAP request-limit responses.",
     )
     parser.add_argument(
@@ -73,7 +73,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def fetch_html(session, url, retries=6, retry_backoff=5.0, rate_limit_backoff=60.0):
+def fetch_html(session, url, retries=6, retry_backoff=5.0, rate_limit_backoff=300.0):
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -135,7 +135,7 @@ def fetch_html(session, url, retries=6, retry_backoff=5.0, rate_limit_backoff=60
     raise last_error
 
 
-def discover_bist_company_urls(session, retries=6, retry_backoff=5.0, rate_limit_backoff=60.0):
+def discover_bist_company_urls(session, retries=6, retry_backoff=5.0, rate_limit_backoff=300.0):
     html = fetch_html(
         session,
         BIST_COMPANIES_URL,
@@ -572,7 +572,7 @@ def consolidate_company_info_by_oid(companies):
 
 
 def refresh_company_info(limit=None, sleep_seconds=3.0, include_non_traded=False, retries=6,
-                         retry_backoff=5.0, rate_limit_backoff=60.0, missing_only=False,
+                         retry_backoff=5.0, rate_limit_backoff=300.0, missing_only=False,
                          recheck_non_traded=False, start_after=None, symbols=None):
     from datetime import UTC, datetime
 

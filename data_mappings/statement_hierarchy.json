@@ -80,7 +80,7 @@
         "label": "unrelated-party short-term borrowings"
     },
     "diger kisa vadeli borclanmalar": {
-        "level": 2,
+        "level": 3,
         "label": "other short-term borrowings"
     },
     "uzun vadeli borclanmalar": {
@@ -108,7 +108,7 @@
         "label": "unrelated-party current portion of long-term borrowings"
     },
     "diger uzun vadeli borclanmalarin kisa vadeli kisimlari": {
-        "level": 2,
+        "level": 3,
         "label": "other current portion of long-term borrowings"
     }
 }

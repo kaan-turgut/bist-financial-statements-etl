@@ -1,5 +1,6 @@
 import json
 import re
+from decimal import Decimal
 from functools import lru_cache
 
 import pandas as pd
@@ -56,7 +57,7 @@ def classify_texts(labels):
             classified.append(("date", date_pattern.search(text).group(), text))
 
         elif number_pattern.match(text):
-            num = int(text.replace(".", "").replace(",", "."))
+            num = Decimal(text.replace(".", "").replace(",", "."))
             classified.append(("number", num, text))
 
         elif text in statement_types_tr:

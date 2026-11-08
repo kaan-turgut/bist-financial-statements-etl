@@ -1,9 +1,11 @@
 beautifulsoup4
+lxml>=5,<7
 pandas
 requests
 psycopg[binary]>=3.2,<4
 Unidecode
 numpy
+pypdf>=6,<7
 
 # Validation notebook
 matplotlib

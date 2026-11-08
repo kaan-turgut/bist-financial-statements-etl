@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from models.company import Company
-from read_statements.helpers import parse_date_year, parse_interval
+from read_statements.helpers import parse_interval
 
 
 @dataclass(init=False)
@@ -20,24 +20,27 @@ class FinancialStatement:
     def clean(self):
 
         df = self.df
+        # Per-share figures and share counts are not monetary statement amounts.
+        # Dedicated EPS ingestion preserves their units and normalization.
+        per_share = (df["item"].fillna("") + " " + df["line_item_path"].fillna("")).str.contains(
+            r"(?:pay|hisse) başına|ağırlıklı ortalama.*(?:pay|hisse)", case=False, regex=True
+        )
+        df = df.loc[~per_share].copy()
 
         # Calculate interval length
         df["interval_days"] = df["date"].apply(parse_interval)
-        # Drop rows where interval > 100 days, where the table is not statement of cash flows or changes in equity, or the quarter is not 4
-        df = df[(df["interval_days"].isna()) | 
-                                (df["interval_days"] <= 100) | 
-                                (df["table"].isin(["Statement of Cash Flows", "Statement of Change in Equity"])) |
-                                    (df["quarter"] == 4)].copy()
-        
-        df.loc[(df["quarter"] == 4) & (df["interval_days"] > 320) & (df["table"] == "Income Statement"), "quarter"] = 1234
+        # Keep both reported quarter and YTD values at the current statement
+        # end. Fiscal years can start in the preceding calendar year.
+        import pandas as pd
 
-        # Parse the year the data row is for
-        df.loc[:, "date_year"] = df["date"].apply(parse_date_year)
-
-        # Drop the rows that are given for comparison with past periods (Reporting year != year(Date))
-        df = df[df["date_year"] == df["year"]].copy()
+        df["_period_end"] = pd.to_datetime(df["date"].str.split(" - ").str[-1], format="%d.%m.%Y")
+        groups = ["company", "year", "quarter", "table"]
+        if "file_path" in df:
+            groups.append("file_path")
+        current_end = df.groupby(groups, dropna=False)["_period_end"].transform("max")
+        df = df.loc[df["_period_end"] == current_end].copy()
         df["value"] = df["value"]*df["reporting unit"]
-        df = df.drop(["reporting unit", "date_year", "interval_days"], axis=1, errors="ignore")
+        df = df.drop(["reporting unit", "_period_end", "interval_days"], axis=1, errors="ignore")
 
         # Set datatypes
         df["year"] = df["year"].astype(int)

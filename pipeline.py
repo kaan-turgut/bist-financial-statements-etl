@@ -8,6 +8,7 @@ from services.company_loader import (
     resolve_symbols,
 )
 from services.download_statements import download
+from services.earnings_per_share import import_eps_postgres, update_eps_postgres, refresh_eps_postgres
 from services.postgres_financial_pipeline import (
     apply_medallion_migration,
     calculate_gold_financials_postgres,
@@ -19,8 +20,25 @@ from services.postgres_price_pipeline import (
     update_prices_postgres,
 )
 from services.postgres_reference_data import update_reference_data_postgres
+from services.price_earnings import calculate_price_earnings_postgres
+from services.repair_cash_flows import repair_cash_flows_postgres
+from services.repair_financials import repair_financials_postgres
 
 logger = logging.getLogger(__name__)
+
+
+def positive_int(value):
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def add_parsing_arguments(parser):
+    parser.add_argument(
+        "--parse-workers", type=positive_int, default=2,
+        help="Local statement parsing processes (default: 2); use 1 for serial parsing. Database writes stay serial.",
+    )
 
 
 def add_company_arguments(parser):
@@ -57,17 +75,21 @@ def build_parser():
     )
     add_company_arguments(run_parser)
     add_period_arguments(run_parser, include_price_level=True)
+    add_parsing_arguments(run_parser)
     run_parser.add_argument("--skip-download", action="store_true")
     run_parser.add_argument("--skip-reference-data", action="store_true")
-    run_parser.add_argument("--request-sleep", type=float, default=5.0)
-    run_parser.add_argument("--rate-limit-delay", type=float, default=120.0)
+    run_parser.add_argument("--request-sleep", type=float, default=10.0)
+    run_parser.add_argument("--rate-limit-delay", type=float, default=300.0)
 
     download_parser = commands.add_parser("download", help="Download annual KAP statement archives only.")
     add_company_arguments(download_parser)
     download_parser.add_argument("--begin-year", type=int, required=True)
     download_parser.add_argument("--end-year", type=int, required=True)
-    download_parser.add_argument("--request-sleep", type=float, default=5.0)
-    download_parser.add_argument("--rate-limit-delay", type=float, default=120.0)
+    download_parser.add_argument(
+        "--start-after", help="Resume after this company, excluding it; default company order is alphabetical."
+    )
+    download_parser.add_argument("--request-sleep", type=float, default=10.0)
+    download_parser.add_argument("--rate-limit-delay", type=float, default=300.0)
 
     commands.add_parser(
         "update-reference-data", aliases=["update-reference-data-postgres"],
@@ -80,12 +102,17 @@ def build_parser():
     )
     add_company_arguments(database_parser)
     add_period_arguments(database_parser, include_price_level=True)
+    add_parsing_arguments(database_parser)
 
     gold_parser = commands.add_parser(
         "calculate-gold",
         help="Rebuild PostgreSQL Gold financial values from existing Silver data only.",
     )
     add_company_arguments(gold_parser)
+    pe_parser = commands.add_parser(
+        "calculate-pe", help="Calculate quarter-end P/E from published EPS and stored original prices only."
+    )
+    add_company_arguments(pe_parser)
     gold_parser.add_argument(
         "--price-level-year", type=int,
         help="Inflation adjustment target year; defaults to the latest month in inflation_table.",
@@ -118,6 +145,20 @@ def build_parser():
     )
 
     commands.add_parser("migrate-postgres", help="Create the PostgreSQL Bronze/Silver/Gold/Ops schema.")
+    repair_parser = commands.add_parser(
+        "repair-cash-flows", help="Restore cash-flow periods from Bronze and refresh published Gold data."
+    )
+    add_company_arguments(repair_parser)
+    financial_repair_parser = commands.add_parser('repair-financials', help='Restore reported quarter/YTD facts and report price bases from retained sources.')
+    financial_repair_parser.add_argument('--symbols', nargs='+', help='Defaults to all companies with active Silver filings.')
+    eps_parser = commands.add_parser("update-eps", help="Extract reported EPS from local PDFs and refresh published Gold.")
+    eps_parser.add_argument("--symbols", nargs="+", help="Defaults to companies with published Gold data.")
+    eps_parser.add_argument("--workers",type=positive_int,default=2,help="Local EPS/PDF extraction workers (default: 2).")
+    eps_parser.add_argument('--ocr', action='store_true', help='OCR image-only PDF pages locally; requires pdftoppm and tesseract.')
+    eps_calculate_parser = commands.add_parser('calculate-eps', help='Refresh EPS, coverage estimates and P/E using stored sources without re-reading statements.')
+    eps_calculate_parser.add_argument('--symbols', nargs='+', help='Defaults to companies with published Gold data.')
+    eps_import_parser = commands.add_parser("import-eps", help="Import verified period-specific EPS inputs from JSON.")
+    eps_import_parser.add_argument("--file", required=True)
     return parser
 
 
@@ -154,6 +195,7 @@ def process_database_postgres(companies, args):
     ingested, run_id = update_database_postgres(
         companies, args.begin_year, args.begin_quarter,
         args.end_year, args.end_quarter, price_level=price_level,
+        parse_workers=args.parse_workers,
     )
     logger.info("PostgreSQL processed %s files; Gold calculation run %s", ingested, run_id)
 
@@ -182,9 +224,40 @@ def main(argv=None):
     if args.command == "migrate-postgres":
         apply_medallion_migration()
         return
+    if args.command == "repair-cash-flows":
+        companies = resolve_companies(args.symbols) if args.symbols else None
+        repair_cash_flows_postgres(companies)
+        return
+    if args.command == 'repair-financials':
+        companies = resolve_companies(args.symbols) if args.symbols else None
+        logger.info('Financial measurement repair completed: %s', repair_financials_postgres(companies))
+        return
+    if args.command == "update-eps":
+        companies = resolve_companies(args.symbols) if args.symbols else None
+        logger.info("EPS ingestion completed: %s", update_eps_postgres(companies,extraction_workers=args.workers,ocr=args.ocr))
+        return
+    if args.command == "import-eps":
+        logger.info("EPS import completed: %s", import_eps_postgres(args.file))
+        return
+    if args.command == 'calculate-eps':
+        companies = resolve_companies(args.symbols) if args.symbols else None
+        logger.info('EPS-only refresh completed under run %s', refresh_eps_postgres(companies))
+        return
 
     if args.command == "download":
         companies = resolve_companies(args.symbols)
+        if args.start_after:
+            try:
+                resume_symbol = resolve_symbols([args.start_after])[0]
+                index = next(i for i, company in enumerate(companies) if company.symbol == resume_symbol)
+            except (ValueError, StopIteration):
+                parser.error(f"--start-after company {args.start_after!r} is not in the selected company list")
+            companies = companies[index+1:]
+            if not companies:
+                logger.info("No companies remain after %s", resume_symbol)
+                return
+            logger.info("Resuming after %s: %s companies, starting with %s",
+                        resume_symbol, len(companies), companies[0].symbol)
         download_statements(
             companies, args.begin_year, args.end_year, args.request_sleep, args.rate_limit_delay
         )
@@ -204,6 +277,9 @@ def main(argv=None):
         )
         run_id = calculate_gold_financials_postgres(*price_level, companies=companies)
         logger.info("Gold calculation completed under run %s", run_id)
+    elif args.command == "calculate-pe":
+        companies = resolve_companies(args.symbols) if args.symbols else None
+        logger.info("P/E result: %s", calculate_price_earnings_postgres(companies))
     elif args.command in {"run", "run-postgres"}:
         companies = resolve_companies(args.symbols)
         apply_medallion_migration()

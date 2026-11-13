@@ -16,9 +16,16 @@ def _executemany(conn, query, rows):
         cursor.executemany(query, rows)
 
 
+def metadata_dsn():
+    return (
+        os.environ.get("BIST_FINANCE_DSN")
+        or os.environ.get("DATABASE_URL")
+        or f"dbname={DATABASE_NAME}"
+    )
+
+
 def connect_metadata_db():
-    dsn = os.environ.get("BIST_FINANCE_DSN") or os.environ.get("DATABASE_URL")
-    conn = psycopg.connect(dsn or f"dbname={DATABASE_NAME}", row_factory=dict_row)
+    conn = psycopg.connect(metadata_dsn(), row_factory=dict_row)
     if conn.info.dbname != DATABASE_NAME:
         conn.close()
         raise RuntimeError(

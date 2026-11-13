@@ -1,7 +1,7 @@
 CREATE SCHEMA IF NOT EXISTS metadata;
 
 CREATE TABLE IF NOT EXISTS metadata.companies (
-    company_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    company_id BIGINT GENERATED ALWAYS AS IDENTITY,
     symbol TEXT NOT NULL UNIQUE,
     mkk_member_oid TEXT NOT NULL UNIQUE,
     company_code TEXT,

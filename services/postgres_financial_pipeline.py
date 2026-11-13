@@ -35,6 +35,9 @@ MIGRATIONS = (
     ("012", "012_structured_eps_sources.sql"),
     ("013", "013_eps_coverage.sql"),
     ("014", "014_eps_refresh_snapshots.sql"),
+    ("015", "015_price_earnings_estimates.sql"),
+    ("016", "016_single_eps_ratio.sql"),
+    ("017", "017_eps_inflation_adjustment.sql"),
 )
 TABLE_TYPES = {
     "Income Statement": "income_statement",

@@ -184,6 +184,65 @@ def profit_at(observation, target, cpi):
     return None if factor is None else observation.attributable_profit * factor
 
 
+def _annual_ytd_ttm(annual, previous, current, cpi):
+    """Bridge overlapping disclosures using profit and share-days, never EPS.
+
+    This needs no individual Q2/Q3/Q4 observations. All three disclosed
+    denominators must already have a verified common corporate-action basis.
+    """
+    if not all(o is not None and o.has_inputs for o in (annual, previous, current)):
+        return None
+    if not all(_compatible(current, o, cpi) for o in (annual, previous)):
+        return None
+    start = previous.period_end + timedelta(days=1)
+    days = (current.period_end - start).days + 1
+    if not (
+        annual.days in {365, 366}
+        and annual.period_start == previous.period_start
+        and previous.period_end < annual.period_end
+        and current.period_start == annual.period_end + timedelta(days=1)
+        and days in {365, 366}
+        and annual.days - previous.days + current.days == days
+    ):
+        return None
+    residual_share_days = (
+        annual.weighted_average_shares * annual.days
+        - previous.weighted_average_shares * previous.days
+    )
+    if residual_share_days <= 0:
+        return None
+    share_days = residual_share_days + current.weighted_average_shares * current.days
+    target = current.purchasing_power_date
+    weighted_shares = share_days / days
+    profit = (
+        profit_at(annual, target, cpi)
+        - profit_at(previous, target, cpi)
+        + current.attributable_profit
+    )
+    observations = (annual, previous, current)
+    converted = any(o.purchasing_power_date != target for o in observations)
+    return profit / weighted_shares, {
+        "ttm_method": "verified_annual_ytd_bridge_cpi"
+        if converted
+        else "verified_annual_ytd_bridge",
+        "weighted_average_shares_ttm": str(weighted_shares),
+        "purchasing_power_date_ttm": str(target) if target else None,
+        "ttm_period_start": str(start),
+        "ttm_period_end": str(current.period_end),
+        "ttm_bridge_source_ids": [o.source_id for o in observations],
+        "cpi_conversions": [
+            {
+                "source_date": str(o.purchasing_power_date),
+                "target_date": str(target),
+                "factor": str(cpi.factor(o.purchasing_power_date, target)),
+            }
+            for o in observations
+        ]
+        if converted
+        else [],
+    }
+
+
 def calculate_history(history, cpi=None):
     """Return EPS per (fiscal year, quarter, kind, class, scope), without proxies."""
     groups = {
@@ -202,6 +261,9 @@ def calculate_history(history, cpi=None):
                 if (o.eps_kind, o.share_class, o.earnings_scope) == group
             }
             ytd = selected.get("ytd")
+            # A disclosed first fiscal quarter is also the year-to-date period.
+            if ytd is None and quarter == 1:
+                ytd = selected.get("quarter")
             current = selected.get("quarter") or (
                 ytd if quarter == 1 and ytd is not None and ytd.days <= 100 else None
             )
@@ -247,11 +309,33 @@ def calculate_history(history, cpi=None):
                             normalization={
                                 "method": "derived_from_ytd",
                                 "source_ids": [previous_ytd.source_id, ytd.source_id],
+                                "cpi_conversions": [
+                                    {
+                                        "source_date": str(
+                                            previous_ytd.purchasing_power_date
+                                        ),
+                                        "target_date": str(ytd.purchasing_power_date),
+                                        "factor": str(
+                                            cpi.factor(
+                                                previous_ytd.purchasing_power_date,
+                                                ytd.purchasing_power_date,
+                                            )
+                                        ),
+                                    }
+                                ]
+                                if previous_ytd.purchasing_power_date
+                                != ytd.purchasing_power_date
+                                else [],
                             },
                         )
-                        if (
-                            current is None
-                            or abs(current.value - derived.value)
+                        if current is None or (
+                            not current.has_inputs
+                            and current.period_start == derived.period_start
+                            and current.period_end == derived.period_end
+                            and current.purchasing_power_date
+                            == derived.purchasing_power_date
+                            and current.share_basis_id in (None, derived.share_basis_id)
+                            and abs(current.value - derived.value)
                             <= current.rounding_tolerance
                         ):
                             if current is not None:
@@ -261,6 +345,19 @@ def calculate_history(history, cpi=None):
                                         "reported_eps": current.reported_eps,
                                         "rounding_tolerance": current.rounding_tolerance,
                                         "source_id": current.source_id,
+                                        "normalization": {
+                                            **derived.normalization,
+                                            "source_ids": list(
+                                                dict.fromkeys(
+                                                    [
+                                                        *derived.normalization[
+                                                            "source_ids"
+                                                        ],
+                                                        current.source_id,
+                                                    ]
+                                                )
+                                            ),
+                                        },
                                     }
                                 )
                             current = derived
@@ -312,6 +409,14 @@ def calculate_history(history, cpi=None):
             if quarter == 4 and ytd and ytd.days in {365, 366}:
                 ttm = ytd.value
                 detail["ttm_method"] = "annual_report"
+                detail["ttm_source_ids"] = (
+                    [ytd.source_id] if ytd.source_id is not None else []
+                )
+                detail["purchasing_power_date_ttm"] = (
+                    str(ytd.purchasing_power_date)
+                    if ytd.purchasing_power_date
+                    else None
+                )
                 detail["comparison_basis"]["ttm"] = detail["comparison_basis"]["ytd"]
             else:
                 period = year * 4 + quarter
@@ -339,7 +444,9 @@ def calculate_history(history, cpi=None):
                             / weighted_shares
                         )
                         converted = any(
-                            o.purchasing_power_date != target for o in window
+                            o.purchasing_power_date != target
+                            or o.normalization.get("cpi_conversions")
+                            for o in window
                         )
                         detail.update(
                             ttm_method="verified_four_quarters_cpi"
@@ -360,12 +467,16 @@ def calculate_history(history, cpi=None):
                             if converted
                             else [],
                         )
+                        detail["cpi_conversions"].extend(
+                            conversion
+                            for o in window
+                            for conversion in o.normalization.get("cpi_conversions", [])
+                        )
                         detail["comparison_basis"]["ttm"] = detail["comparison_basis"][
                             "quarter"
                         ]
-                        detail["source_ids"] = sorted(
-                            set(detail["source_ids"])
-                            | {
+                        detail["ttm_source_ids"] = sorted(
+                            {
                                 source
                                 for o in window
                                 for source in o.normalization.get(
@@ -374,6 +485,55 @@ def calculate_history(history, cpi=None):
                                 if source is not None
                             }
                         )
+                        detail["source_ids"] = sorted(
+                            set(detail["source_ids"]) | set(detail["ttm_source_ids"])
+                        )
+            if ttm is None and quarter < 4 and ytd is not None:
+                bridge_inputs = [
+                    next(
+                        (
+                            o
+                            for o in history.get(period, [])
+                            if o.period_kind == "ytd"
+                            and (o.eps_kind, o.share_class, o.earnings_scope) == group
+                        ),
+                        None,
+                    )
+                    for period in ((year - 1, 4), (year - 1, quarter))
+                ]
+                # Q1 may have been explicitly disclosed as a quarter only.
+                if quarter == 1 and bridge_inputs[1] is None:
+                    bridge_inputs[1] = next(
+                        (
+                            o
+                            for o in history.get((year - 1, 1), [])
+                            if o.period_kind == "quarter"
+                            and (o.eps_kind, o.share_class, o.earnings_scope) == group
+                        ),
+                        None,
+                    )
+                bridge = _annual_ytd_ttm(*bridge_inputs, ytd, cpi)
+                if bridge is not None:
+                    ttm, bridge_details = bridge
+                    detail.update(bridge_details)
+                    detail["ttm_source_ids"] = sorted(
+                        {
+                            o.source_id
+                            for o in (*bridge_inputs, ytd)
+                            if o.source_id is not None
+                        }
+                    )
+                    detail["comparison_basis"]["ttm"] = detail["comparison_basis"][
+                        "ytd"
+                    ]
+                    detail["source_ids"] = sorted(
+                        set(detail["source_ids"])
+                        | {
+                            o.source_id
+                            for o in (*bridge_inputs, ytd)
+                            if o.source_id is not None
+                        }
+                    )
             if ttm is not None:
                 detail["ttm_unavailable_reason"] = None
             result[key] = {

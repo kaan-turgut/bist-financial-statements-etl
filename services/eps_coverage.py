@@ -310,6 +310,10 @@ def calculate_eps_coverage(conn, run_id, capital=None, cpi=None, company_ids=Non
                             "period_start": str(start),
                             "period_end": str(end),
                             "parent_profit": str(amount),
+                            "measurement_basis": fact["measurement_basis"],
+                            "purchasing_power_date": str(fact["purchasing_power_date"])
+                            if fact["purchasing_power_date"]
+                            else None,
                             "weighted_issued_nominal_capital": str(
                                 denominator["weighted_capital"]
                             ),

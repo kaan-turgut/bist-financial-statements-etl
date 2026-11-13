@@ -23,12 +23,10 @@ from models.earnings_per_share import (
 )
 
 logger = logging.getLogger(__name__)
-RATIO_CODES = {
-    ("basic", "total"): "eps",
-    ("diluted", "total"): "eps_diluted",
-    ("basic", "continuing"): "eps_continuing",
-    ("diluted", "continuing"): "eps_continuing_diluted",
-}
+EPS_GROUPS = (
+    ("basic", "total"), ("diluted", "total"),
+    ("basic", "continuing"), ("diluted", "continuing"),
+)
 
 
 def extract_filing_eps(
@@ -461,7 +459,7 @@ def calculate_eps_ratios(conn, run_id, company_ids=None):
             if row["company_id"] != company_id:
                 continue
             year, quarter = row["fiscal_year"], row["fiscal_quarter"]
-            groups = {(kind, "ordinary", scope) for kind, scope in RATIO_CODES}
+            groups = {(kind, "ordinary", scope) for kind, scope in EPS_GROUPS}
             groups |= {key[2:] for key in calculated if key[:2] == (year, quarter)}
             for kind, share_class, scope in sorted(groups):
                 result = calculated.get(
@@ -501,26 +499,43 @@ def calculate_eps_ratios(conn, run_id, company_ids=None):
                         json.dumps(result["details"], default=str),
                     ),
                 )
-                if share_class == "ordinary":
-                    conn.execute(
-                        """INSERT INTO gold.financial_ratios
-                        (calculation_run_id,company_id,fiscal_year,fiscal_quarter,ratio_code,value_quarter,value_ytd,value_ttm)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT (calculation_run_id,company_id,fiscal_year,fiscal_quarter,ratio_code)
-                        DO UPDATE SET value_quarter=EXCLUDED.value_quarter,value_ytd=EXCLUDED.value_ytd,
-                                      value_ttm=EXCLUDED.value_ttm,calculated_at=now()""",
-                        (
-                            run_id,
-                            company_id,
-                            year,
-                            quarter,
-                            RATIO_CODES[(kind, scope)],
-                            *values,
-                        ),
-                    )
+
     logger.info(
         "EPS coverage assessment: %s",
         calculate_eps_coverage(conn, run_id, capital, cpi, company_ids),
+    )
+    publish_eps_ratio(conn, run_id, company_ids)
+    from services.eps_inflation import publish_eps_inflation_ratio
+
+    publish_eps_inflation_ratio(conn, run_id, company_ids, cpi)
+
+
+def publish_eps_ratio(conn, run_id, company_ids=None):
+    """Publish one basic-total EPS, preferring verified values per period field.
+
+    All types and source details stay in eps_values; estimate provenance and
+    per-field quality stay in eps_coverage. Missing inputs never become zero.
+    """
+    conn.execute(
+        """INSERT INTO gold.financial_ratios
+        (calculation_run_id,company_id,fiscal_year,fiscal_quarter,ratio_code,
+         value_quarter,value_ytd,value_ttm)
+        SELECT e.calculation_run_id,e.company_id,e.fiscal_year,e.fiscal_quarter,'eps',
+          COALESCE(e.value_quarter,c.estimated_value_quarter),
+          COALESCE(e.value_ytd,c.estimated_value_ytd),
+          COALESCE(e.value_ttm,c.estimated_value_ttm)
+        FROM gold.eps_values e LEFT JOIN gold.eps_coverage c
+          ON c.calculation_run_id=e.calculation_run_id AND c.company_id=e.company_id
+          AND c.fiscal_year=e.fiscal_year AND c.fiscal_quarter=e.fiscal_quarter
+        WHERE e.calculation_run_id=%s AND e.eps_kind='basic'
+          AND e.share_class='ordinary' AND e.earnings_scope='total'
+        """
+        + (" AND e.company_id=ANY(%s)" if company_ids is not None else "")
+        + """ ON CONFLICT (calculation_run_id,company_id,fiscal_year,fiscal_quarter,ratio_code)
+        DO UPDATE SET value_quarter=EXCLUDED.value_quarter,value_ytd=EXCLUDED.value_ytd,
+          value_ttm=EXCLUDED.value_ttm,quarter_yoy_change=NULL,quarter_qoq_change=NULL,
+          ytd_yoy_change=NULL,ttm_qoq_change=NULL,calculated_at=now()""",
+        (run_id, company_ids) if company_ids is not None else (run_id,),
     )
 
 
@@ -630,6 +645,7 @@ def calculate_eps_changes(conn, run_id, company_ids=None):
           AND p.company_id=e.company_id AND p.eps_kind=e.eps_kind AND p.share_class=e.share_class
           AND p.earnings_scope=e.earnings_scope AND p.fiscal_year*4+p.fiscal_quarter=e.fiscal_year*4+e.fiscal_quarter-1
         WHERE e.calculation_run_id=%s AND e.share_class='ordinary'
+          AND e.eps_kind='basic' AND e.earnings_scope='total'
     ) UPDATE gold.financial_ratios r SET
         quarter_yoy_change=CASE WHEN e.calculation_details->'comparison_basis'->>'quarter' IS NOT NULL
           AND e.calculation_details->'comparison_basis'->>'quarter'=e.annual_details->'comparison_basis'->>'quarter'
@@ -645,10 +661,7 @@ def calculate_eps_changes(conn, run_id, company_ids=None):
           THEN e.value_ttm/NULLIF(e.previous_ttm,0)-1 END
         FROM compared e WHERE r.calculation_run_id=e.calculation_run_id AND r.company_id=e.company_id
           AND r.fiscal_year=e.fiscal_year AND r.fiscal_quarter=e.fiscal_quarter
-          AND r.ratio_code=CASE
-            WHEN e.eps_kind='basic' AND e.earnings_scope='total' THEN 'eps'
-            WHEN e.eps_kind='diluted' AND e.earnings_scope='total' THEN 'eps_diluted'
-            WHEN e.eps_kind='basic' THEN 'eps_continuing' ELSE 'eps_continuing_diluted' END"""
+          AND r.ratio_code='eps'"""
         + (" AND r.company_id=ANY(%s)" if company_ids is not None else ""),
         (run_id, company_ids) if company_ids is not None else (run_id,),
     )

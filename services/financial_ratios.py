@@ -1,4 +1,4 @@
-"""Calculate financial ratios and publish source-verified EPS independently."""
+"""Calculate financial ratios and publish the best available basic EPS."""
 
 from services.earnings_per_share import calculate_eps_changes, calculate_eps_ratios
 
@@ -116,7 +116,7 @@ def calculate_ratio_changes(conn, run_id):
             LAG(value_quarter) OVER sequential AS previous_quarter,
             LAG(value_ytd) OVER annual AS previous_ytd,
             LAG(value_ttm) OVER sequential AS previous_ttm
-        FROM gold.financial_ratios WHERE calculation_run_id=%s
+        FROM gold.financial_ratios WHERE calculation_run_id=%s AND ratio_code<>'eps_inflation_adj'
         WINDOW sequential AS (PARTITION BY company_id,ratio_code ORDER BY fiscal_year,fiscal_quarter),
                annual AS (PARTITION BY company_id,ratio_code,fiscal_quarter ORDER BY fiscal_year)
     ), changes AS (

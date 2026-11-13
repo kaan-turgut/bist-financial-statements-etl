@@ -265,7 +265,7 @@ def test_fresh_medallion_install_applies_both_migrations(legacy_database):
     assert pipeline.apply_medallion_migration()
     with legacy_database() as conn:
         versions = conn.execute("SELECT version FROM ops.schema_migrations ORDER BY version").fetchall()
-        assert [r["version"] for r in versions] == ["007", "008", "009", "010", "011", "012", "013", "014"]
+        assert [r["version"] for r in versions] == ["007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017"]
         columns = conn.execute("""SELECT column_name FROM information_schema.columns
             WHERE table_schema='gold' AND table_name='financial_values'""").fetchall()
         assert not any("ttm" in r["column_name"] for r in columns)

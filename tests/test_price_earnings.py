@@ -164,3 +164,103 @@ def test_calculate_pe_cli_passes_company_scope(monkeypatch):
     cli.main(["calculate-pe","--symbols","TEST"])
     cli.main(["calculate-pe"])
     assert calls == [companies,None]
+
+
+@pytest.mark.parametrize('method', ['verified_four_quarters_cpi', 'verified_annual_ytd_bridge_cpi'])
+def test_pe_accepts_recorded_multistep_cpi_conversion_and_rejects_missing_link(method):
+    row, sources = example()
+    old, intermediate = date(2023, 9, 30), date(2023, 12, 31)
+    sources[0]['purchasing_power_date'] = old
+    details = row['calculation_details']
+    details.update(ttm_method=method, purchasing_power_date_ttm=str(row['period_end']),
+                   cpi_conversions=[
+                       {'source_date': str(old), 'target_date': str(intermediate), 'factor': '1.1'},
+                       {'source_date': str(intermediate), 'target_date': str(row['period_end']), 'factor': '1.2'},
+                   ])
+    assert price_earnings(row, sources)['pe_ratio'] == 10
+    details['cpi_conversions'][0]['factor'] = '-1'
+    assert price_earnings(row, sources)['pe_ratio'] is None
+    details['cpi_conversions'][0]['factor'] = '1.1'
+    details['cpi_conversions'].pop()
+    assert price_earnings(row, sources)['pe_ratio'] is None
+
+
+def test_annual_pe_uses_only_annual_dependencies(published_period):
+    conn, company, run = published_period
+    annual = conn.execute('SELECT source_id FROM bronze.eps_sources').fetchone()['source_id']
+    prior = normalize_observation(
+        period_start=date(2023, 4, 1), period_end=date(2023, 12, 31),
+        period_kind='ytd', reported_eps=1, purchasing_power_date=date(2023, 12, 31),
+    )
+    store_eps_source(
+        conn, company_id=company, year=2023, quarter=3, source_path='prior.json',
+        source_hash='prior', source_kind='json', payload={}, observations=[prior], run_id=run,
+    )
+    extra = conn.execute("SELECT source_id FROM bronze.eps_sources WHERE source_sha256='prior'").fetchone()['source_id']
+    # The earlier YTD contributes to quarterly EPS, but annual TTM is independent.
+    details = {'unit': 'TRY_per_1_TRY_nominal', 'ttm_method': 'annual_report',
+               'source_ids': [annual, extra], 'ttm_source_ids': [annual]}
+    conn.execute('UPDATE gold.eps_values SET calculation_details=%s', (Jsonb(details),))
+    conn.commit()
+    assert calculate_price_earnings_postgres()['available'] == 1
+    row = conn.execute('SELECT * FROM gold.current_price_earnings').fetchone()
+    assert row['calculation_details']['eps_source_ids'] == [annual]
+    assert row['pe_quality'] == 'verified'
+    assert row['best_available_pe_ratio'] == row['pe_ratio'] == 10
+
+
+@pytest.mark.parametrize('verified_eps', [None, -2, 0, 2])
+def test_estimates_have_separate_quality_and_never_replace_verified_eps(published_period, verified_eps):
+    conn, company, run = published_period
+    conn.execute('UPDATE gold.eps_values SET value_ttm=%s', (verified_eps,))
+    assessment = {'evidence': {'ttm': {
+        'period_start': '2023-04-01', 'period_end': '2024-03-31',
+        'measurement_basis': 'nominal', 'purchasing_power_date': None,
+        'denominator_method': 'calendar_weighted_historical_issued_capital',
+    }}, 'assumptions': ['Treasury shares are not deducted.']}
+    conn.execute('''INSERT INTO gold.eps_coverage
+        (calculation_run_id,company_id,fiscal_year,fiscal_quarter,estimated_value_ttm,assessment)
+        VALUES (%s,%s,2023,4,4,%s)''', (run, company, Jsonb(assessment)))
+    conn.commit()
+    result = calculate_price_earnings_postgres()
+    row = conn.execute('SELECT * FROM gold.current_price_earnings').fetchone()
+    assert row['estimated_eps_ttm'] == 4
+    if verified_eps is None:
+        assert row['pe_ratio'] is None
+        assert row['estimated_pe_ratio'] == row['best_available_pe_ratio'] == 5
+        assert row['pe_quality'] == 'estimated'
+        assert result['estimated_available'] == 1
+        assert row['price_date'] == date(2024, 3, 29)
+        assert row['calculation_details']['estimate']['evidence'] == assessment['evidence']['ttm']
+    else:
+        assert row['estimated_pe_ratio'] is None
+        assert row['pe_quality'] == ('verified' if verified_eps > 0 else 'unavailable')
+    ratio = conn.execute("SELECT value_ttm FROM gold.current_financial_ratios WHERE ratio_code='price_earnings'").fetchone()
+    assert ratio['value_ttm'] == row['pe_ratio']
+
+
+@pytest.mark.parametrize('problem', ['missing_evidence', 'quarterly_period', 'unknown_basis', 'wrong_power', 'loss', 'future_price', 'multiple_instruments'])
+def test_estimated_pe_rejects_unsupported_inputs(problem):
+    from models.price_earnings import estimated_price_earnings
+
+    row, _ = example()
+    row.update(value_ttm=None, estimated_eps_ttm=4, eps_assessment={'evidence': {'ttm': {
+        'period_start': '2023-04-01', 'period_end': '2024-03-31',
+        'measurement_basis': 'nominal', 'purchasing_power_date': None,
+    }}})
+    evidence = row['eps_assessment']['evidence']['ttm']
+    if problem == 'missing_evidence':
+        row['eps_assessment'] = {}
+    elif problem == 'quarterly_period':
+        evidence['period_start'] = '2024-01-01'
+    elif problem == 'unknown_basis':
+        evidence['measurement_basis'] = 'unknown'
+    elif problem == 'wrong_power':
+        evidence.update(measurement_basis='inflation_adjusted', purchasing_power_date='2024-12-31')
+    elif problem == 'loss':
+        row['estimated_eps_ttm'] = -4
+    elif problem == 'future_price':
+        row['price_date'] = date(2024, 4, 1)
+    elif problem == 'multiple_instruments':
+        row['instrument_count'] = 2
+    assert estimated_price_earnings(row)['estimated_pe_ratio'] is None

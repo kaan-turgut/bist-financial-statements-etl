@@ -8,7 +8,11 @@ from services.company_loader import (
     resolve_symbols,
 )
 from services.download_statements import download
-from services.earnings_per_share import import_eps_postgres, update_eps_postgres, refresh_eps_postgres
+from services.earnings_per_share import (
+    import_eps_postgres,
+    refresh_eps_postgres,
+    update_eps_postgres,
+)
 from services.postgres_financial_pipeline import (
     apply_medallion_migration,
     calculate_gold_financials_postgres,
@@ -20,6 +24,7 @@ from services.postgres_price_pipeline import (
     update_prices_postgres,
 )
 from services.postgres_reference_data import update_reference_data_postgres
+from services.postgres_setup import initialize_postgres
 from services.price_earnings import calculate_price_earnings_postgres
 from services.repair_cash_flows import repair_cash_flows_postgres
 from services.repair_financials import repair_financials_postgres
@@ -144,6 +149,13 @@ def build_parser():
         "--price-level-month", type=int, choices=range(1, 13), required=True
     )
 
+    setup_parser = commands.add_parser(
+        "init-postgres", help="Initialize the PostgreSQL schema and seed empty company metadata."
+    )
+    setup_parser.add_argument(
+        "--create-database", action="store_true",
+        help="Create bist_finance if needed, using the same connection settings against postgres.",
+    )
     commands.add_parser("migrate-postgres", help="Create the PostgreSQL Bronze/Silver/Gold/Ops schema.")
     repair_parser = commands.add_parser(
         "repair-cash-flows", help="Restore cash-flow periods from Bronze and refresh published Gold data."
@@ -223,6 +235,9 @@ def main(argv=None):
         return
     if args.command == "migrate-postgres":
         apply_medallion_migration()
+        return
+    if args.command == "init-postgres":
+        initialize_postgres(create_database=args.create_database)
         return
     if args.command == "repair-cash-flows":
         companies = resolve_companies(args.symbols) if args.symbols else None

@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 
 from psycopg.types.json import Jsonb
 
-from models.price_earnings import price_earnings
+from models.price_earnings import estimated_price_earnings, price_earnings
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,13 @@ def calculate_price_earnings(
         params.append([c.symbol for c in companies])
     rows = conn.execute(
         f"""SELECT e.*,f.period_end,f.period_end_count,
+            ec.estimated_value_ttm AS estimated_eps_ttm,ec.assessment AS eps_assessment,
             i.instrument_id,i.currency,
             (SELECT COUNT(*) FROM metadata.instruments n WHERE n.company_id=e.company_id) AS instrument_count,
             p.price_date,b.price_row_id,b.source_payload
         FROM {source} e
+        LEFT JOIN gold.eps_coverage ec ON ec.calculation_run_id=e.calculation_run_id
+          AND ec.company_id=e.company_id AND ec.fiscal_year=e.fiscal_year AND ec.fiscal_quarter=e.fiscal_quarter
         LEFT JOIN LATERAL (
             SELECT MAX(period_end) AS period_end,COUNT(DISTINCT period_end) AS period_end_count
             FROM gold.financial_values g WHERE g.calculation_run_id=e.calculation_run_id
@@ -38,7 +41,8 @@ def calculate_price_earnings(
         LEFT JOIN metadata.instruments i ON i.company_id=e.company_id AND i.is_primary
         LEFT JOIN LATERAL (
             SELECT price_date,source FROM silver.daily_prices d
-            WHERE e.value_ttm>0 AND d.instrument_id=i.instrument_id
+            WHERE (e.value_ttm>0 OR (e.value_ttm IS NULL AND ec.estimated_value_ttm>0))
+              AND d.instrument_id=i.instrument_id
               AND d.source='IsYatirim' AND d.price_date BETWEEN f.period_end-10 AND f.period_end
             ORDER BY price_date DESC LIMIT 1
         ) p ON true
@@ -52,7 +56,13 @@ def calculate_price_earnings(
         params,
     ).fetchall()
     source_ids = sorted(
-        {s for row in rows for s in row["calculation_details"].get("source_ids", [])}
+        {
+            s
+            for row in rows
+            for s in row["calculation_details"].get(
+                "ttm_source_ids", row["calculation_details"].get("source_ids", [])
+            )
+        }
     )
     source_rows = conn.execute(
         """SELECT s.*,f.company_id,f.fiscal_year,f.fiscal_quarter,
@@ -70,6 +80,7 @@ def calculate_price_earnings(
         sources[s["source_id"]].append(s)
     reasons = Counter()
     available = 0
+    estimated_available = 0
     # Recalculation within the same run replaces that run's own rows. Separate
     # standalone refreshes use new run IDs and retain their valuation history.
     conn.execute(
@@ -78,11 +89,14 @@ def calculate_price_earnings(
     )
     with conn.cursor().copy("""COPY gold.price_earnings_values
         (valuation_run_id,financial_run_id,company_id,instrument_id,fiscal_year,fiscal_quarter,
-         period_end,price_date,original_close_try,basic_eps_ttm,pe_ratio,price_row_id,calculation_details)
+         period_end,price_date,original_close_try,basic_eps_ttm,pe_ratio,price_row_id,calculation_details,
+         estimated_eps_ttm,estimated_pe_ratio)
         FROM STDIN""") as copied:
         for row in rows:
             selected = []
-            for source_id in row["calculation_details"].get("source_ids", []):
+            for source_id in row["calculation_details"].get(
+                "ttm_source_ids", row["calculation_details"].get("source_ids", [])
+            ):
                 eligible = [
                     s
                     for s in sources[source_id]
@@ -95,6 +109,10 @@ def calculate_price_earnings(
                         s for s in eligible if s["processing_run_id"] == version
                     )
             value = price_earnings(row, selected)
+            estimate = estimated_price_earnings(row)
+            value["calculation_details"]["estimate"] = estimate["details"]
+            if estimate["estimated_pe_ratio"] is not None:
+                estimated_available += 1
             reason = value["calculation_details"]["unavailable_reason"]
             if reason:
                 reasons[reason] += 1
@@ -115,6 +133,8 @@ def calculate_price_earnings(
                     value["pe_ratio"],
                     row["price_row_id"],
                     Jsonb(value["calculation_details"]),
+                    estimate["estimated_eps_ttm"],
+                    estimate["estimated_pe_ratio"],
                 )
             )
     conn.execute(
@@ -134,8 +154,9 @@ def calculate_price_earnings(
         (valuation_run_id, sum(reasons.values()), Jsonb(dict(reasons))),
     )
     logger.info(
-        "P/E calculation: %s available of %s company-periods; unavailable reasons: %s",
+        "P/E calculation: %s verified and %s estimated of %s company-periods; verified unavailable reasons: %s",
         available,
+        estimated_available,
         len(rows),
         dict(reasons),
     )
@@ -143,6 +164,8 @@ def calculate_price_earnings(
         "run_id": valuation_run_id,
         "periods": len(rows),
         "available": available,
+        "estimated_available": estimated_available,
+        "best_available": available + estimated_available,
         "unavailable": dict(reasons),
     }
 

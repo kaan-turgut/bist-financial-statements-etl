@@ -49,4 +49,3 @@ class FinancialStatement:
         df[["company", "year", "quarter", "date", "item", "value"]]
 
         self.df = df
-

@@ -9,7 +9,7 @@ from paths import FINANCIAL_STATEMENTS_DIR
 logger = logging.getLogger(__name__)
 
 
-def download_file(company, year, retries=5, delay=5, request_sleep=10.0, rate_limit_delay=300):
+def download_file(company, year, retries=5, delay=5, request_sleep=20.0, rate_limit_delay=300):
     base_url = "https://www.kap.org.tr/tr/api/home-financial/download-file"
 
     symbol = company.symbol
@@ -45,8 +45,11 @@ def download_file(company, year, retries=5, delay=5, request_sleep=10.0, rate_li
             if len(response.content) < 200:
                 logger.info("%s does not have a file for %s", symbol, year)
                 return
-            with open(filename, "wb") as f:
-                f.writelines(response.iter_content(chunk_size=8192))
+            # Replace an existing archive only after the new one is fully written.
+            partial = filename.with_name(filename.name + ".part")
+            with open(partial, "wb") as f:
+                f.write(response.content)
+            partial.replace(filename)
             logger.info("Downloaded %s", filename)
             return  # success, stop retrying
         except requests.exceptions.RequestException as e:
@@ -58,7 +61,7 @@ def download_file(company, year, retries=5, delay=5, request_sleep=10.0, rate_li
                 logger.error("Failed to download %s %s after %s attempts: %s", symbol, year, retries, e)
 
 
-def download(begin_year, end_year, companies, max_workers=1, request_sleep=10.0, rate_limit_delay=300):
+def download(begin_year, end_year, companies, max_workers=1, request_sleep=20.0, rate_limit_delay=300):
     tasks = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for company in companies:

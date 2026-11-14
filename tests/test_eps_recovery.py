@@ -1,18 +1,22 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
-from models.earnings_per_share import EpsObservation, calculate_history
+import pytest
+from psycopg.types.json import Jsonb
+
+from models.earnings_per_share import (
+    EpsObservation,
+    calculate_history,
+    normalize_observation,
+)
 from models.eps_capital import CapitalHistory, verified_share_basis
 from models.financial_values import CpiSeries
 from read_statements.eps import _nominal_values
 from read_statements.eps_recovery import extract_recoverable_eps, numeric_cells
-from services.eps_coverage import calculate_eps_coverage
-from models.earnings_per_share import normalize_observation
-from services.earnings_per_share import refresh_eps_postgres, store_eps_source
 from services import postgres_financial_pipeline as financials
-from psycopg.types.json import Jsonb
-from types import SimpleNamespace
-import pytest
+from services.earnings_per_share import refresh_eps_postgres, store_eps_source
+from services.eps_coverage import calculate_eps_coverage
 
 
 def table_line(label, values):
@@ -103,8 +107,8 @@ def test_calculate_basic_without_basic_eps_row_uses_parent_profit():
     obs, _ = extract_recoverable_eps([page], 3)
     basic = [o for o in obs if o.eps_kind == "basic"]
     assert len(basic) == 2
-    assert basic[0].attributable_profit == Decimal("-969807895")
-    assert basic[1].value == Decimal("-603972212") / Decimal("829650000")
+    assert basic[0].attributable_profit == Decimal(-969807895)
+    assert basic[1].value == Decimal(-603972212) / Decimal(829650000)
 
 
 def test_nominal_value_does_not_match_suffix_of_total_capital():

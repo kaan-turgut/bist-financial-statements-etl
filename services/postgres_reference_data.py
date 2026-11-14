@@ -45,6 +45,13 @@ def _upsert_series(conn, code, observations, source, run_id):
             (code, observation_date.year, observation_date.month, observation_date,
              float(value), source),
         )
+        # Monthly series hold one observation per month. A partial month's
+        # open/close date moves as data arrives; drop the superseded Silver row.
+        conn.execute(
+            """DELETE FROM silver.monthly_macro_data
+               WHERE series_code=%s AND year=%s AND month=%s AND observation_date<>%s""",
+            (code, observation_date.year, observation_date.month, observation_date),
+        )
 
 
 def update_inflation_postgres():

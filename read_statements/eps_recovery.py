@@ -13,14 +13,14 @@ from unidecode import unidecode
 from models.earnings_per_share import EpsObservation, normalize_observation
 from read_statements.eps import (
     DATE,
-    MONTHS,
-    NUMBER,
     EPS_LABEL,
+    MONTHS,
+    NOTE,
+    NUMBER,
+    _eps_unit,
     _money_multiplier,
     _nominal_value,
-    _eps_unit,
     _nominal_values,
-    NOTE,
     parse_number,
 )
 

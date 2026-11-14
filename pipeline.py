@@ -83,7 +83,7 @@ def build_parser():
     add_parsing_arguments(run_parser)
     run_parser.add_argument("--skip-download", action="store_true")
     run_parser.add_argument("--skip-reference-data", action="store_true")
-    run_parser.add_argument("--request-sleep", type=float, default=10.0)
+    run_parser.add_argument("--request-sleep", type=float, default=20.0)
     run_parser.add_argument("--rate-limit-delay", type=float, default=300.0)
 
     download_parser = commands.add_parser("download", help="Download annual KAP statement archives only.")
@@ -93,7 +93,7 @@ def build_parser():
     download_parser.add_argument(
         "--start-after", help="Resume after this company, excluding it; default company order is alphabetical."
     )
-    download_parser.add_argument("--request-sleep", type=float, default=10.0)
+    download_parser.add_argument("--request-sleep", type=float, default=20.0)
     download_parser.add_argument("--rate-limit-delay", type=float, default=300.0)
 
     commands.add_parser(

@@ -126,7 +126,7 @@ def test_download_resumes_exclusively_after_company_in_default_order(
     assert len(calls) == 1
     selected, begin, end, wait, backoff = calls[0]
     assert [c.symbol for c in selected] == ["ARTMS", "ASELS"]
-    assert (begin, end, wait, backoff) == (2026, 2026, 10, 300)
+    assert (begin, end, wait, backoff) == (2026, 2026, 20, 300)
 
 
 @pytest.mark.parametrize("marker", ["UNKNOWN", "ASELS"])

@@ -8,8 +8,8 @@ import pytest
 
 from read_statements.borrowing_paths import borrowing_path_overrides
 from read_statements.parse_statement import parse_statement
-from services.financial_values import calculate_financial_values
 from services import postgres_financial_pipeline as pipeline
+from services.financial_values import calculate_financial_values
 from tests.test_financial_measurement import fact, values
 
 

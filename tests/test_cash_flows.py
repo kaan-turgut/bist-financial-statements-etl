@@ -255,3 +255,34 @@ def test_scoped_repair_leaves_other_companies_unchanged(database):
     rows = conn.execute("""SELECT c.symbol,s.fiscal_quarter FROM silver.current_financial_observations s
         JOIN metadata.companies c USING (company_id) WHERE item=%s ORDER BY c.symbol""", (OPERATING,)).fetchall()
     assert [(r["symbol"], r["fiscal_quarter"]) for r in rows] == [("OTHER", 4), ("TEST", 2)]
+
+
+def test_gold_republication_prunes_superseded_rows_for_vanished_periods(database):
+    conn, _, _ = database
+    seed_sources(database, quarters=(2,), old_q4_pointer=True)
+    company = [SimpleNamespace(symbol="TEST")]
+    pipeline.calculate_gold_financials_postgres(2024, 3, companies=company)
+    assert conn.execute("SELECT COUNT(*) AS n FROM gold.financial_values WHERE fiscal_quarter=4").fetchone()["n"]
+    conn.commit()
+    repair_cash_flows_postgres()  # Moves the filing to Q2 and republishes Gold.
+    runs = conn.execute("SELECT DISTINCT calculation_run_id FROM gold.financial_values").fetchall()
+    assert len(runs) == 1
+    assert conn.execute("SELECT COUNT(*) AS n FROM gold.financial_values WHERE fiscal_quarter=4").fetchone()["n"] == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM gold.financial_ratios WHERE fiscal_quarter=4").fetchone()["n"] == 0
+
+
+def test_activation_refuses_filing_outside_its_source_period(database):
+    conn, company, run = database
+    filings = seed_sources(database, quarters=(2,))
+    candidate = {
+        "company_id": company, "statement_type": "cash_flow", "fiscal_year": 2023,
+        "fiscal_quarter": 4, "filing_key": filings[2], "processing_run_id": run,
+        "report_kind": "Konsolide", "filing_id": 102,
+    }
+    with pytest.raises(ValueError, match="outside their source period"):
+        pipeline._activate_filing_versions(conn, [candidate], run)
+    conn.rollback()
+    pipeline._activate_filing_versions(conn, [{**candidate, "fiscal_quarter": 2}], run)
+    assert conn.execute(
+        "SELECT fiscal_quarter FROM ops.active_filing_versions WHERE filing_key=%s", (filings[2],)
+    ).fetchone()["fiscal_quarter"] == 2

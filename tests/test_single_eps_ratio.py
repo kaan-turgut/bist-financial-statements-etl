@@ -7,7 +7,11 @@ from psycopg.errors import CheckViolation
 from psycopg.types.json import Jsonb
 
 from paths import PROJECT_ROOT
-from services.earnings_per_share import calculate_eps_changes, calculate_eps_ratios, publish_eps_ratio
+from services.earnings_per_share import (
+    calculate_eps_changes,
+    calculate_eps_ratios,
+    publish_eps_ratio,
+)
 
 
 def seed_eps(conn, company, run):

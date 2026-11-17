@@ -269,6 +269,28 @@ def _activate_filing_versions(conn, candidates, run_id):
               AND s.statement_type='cash_flow' AND s.fiscal_year=f.fiscal_year
               AND s.fiscal_quarter=f.fiscal_quarter)""", (run_id,))
     versions = _choose_active_filing_versions(candidates)
+    # A filing may only be published under its own fiscal period. An early
+    # parser stamped every cumulative Q2/Q3 cash flow as Q4, which produced
+    # future periods such as 2026 Q4; refuse the whole publication instead.
+    filing_periods = {
+        r["filing_key"]: (r["fiscal_year"], r["fiscal_quarter"])
+        for r in conn.execute(
+            "SELECT filing_key,fiscal_year,fiscal_quarter FROM bronze.statement_filings WHERE filing_key=ANY(%s)",
+            ([row["filing_key"] for row in versions],),
+        ).fetchall()
+    }
+    mismatched = [
+        row for row in versions
+        if filing_periods.get(row["filing_key"]) != (row["fiscal_year"], row["fiscal_quarter"])
+    ]
+    if mismatched:
+        sample = ", ".join(
+            f"filing {r['filing_key']} as {r['fiscal_year']} Q{r['fiscal_quarter']}"
+            f" (source {filing_periods.get(r['filing_key'])})" for r in mismatched[:5]
+        )
+        raise ValueError(
+            f"Refusing to activate {len(mismatched)} filing version(s) outside their source period: {sample}"
+        )
     logger.info("Activating %s selected filing versions", len(versions))
     for row in versions:
         conn.execute("""INSERT INTO ops.active_filing_versions
@@ -488,27 +510,29 @@ def _calculate_gold_financials_postgres(price_level_year, price_level_month, *, 
             ('financial_report_basis_unknown', "measurement_basis='unknown'"),
             ('financial_quarter_unavailable', 'value_quarter IS NULL'),
             ('financial_fx_unavailable', 'value_quarter IS NOT NULL AND value_usd IS NULL'),
+            # Seasonal businesses or IAS 29 restatement of earlier YTD figures can
+            # legitimately produce this; it flags rows for review, not rejection.
+            ('financial_negative_quarter_revenue',
+             "statement_type='income_statement' AND item='hasılat' AND value_quarter<0"),
         ):
             conn.execute('''INSERT INTO ops.data_quality_results(run_id,check_name,severity,affected_rows)
                 SELECT %s,%s,'warning',COUNT(*) FROM gold.financial_values
                 WHERE calculation_run_id=%s AND '''+condition, (run_id,name,run_id))
+        # Each run recalculates every active period of its companies, and the
+        # active pointer is per company. Prune all older rows for those companies,
+        # including periods that no longer exist (e.g. a cash flow once stored in
+        # an erroneous Q4 slot), so no unreachable Gold rows linger.
         conn.execute("""DELETE FROM gold.financial_ratios old
             WHERE old.calculation_run_id<>%s
-              AND EXISTS (
-                SELECT 1 FROM gold.financial_ratios current
-                WHERE current.calculation_run_id=%s
-                  AND current.company_id=old.company_id
-                  AND current.fiscal_year=old.fiscal_year
-                  AND current.fiscal_quarter=old.fiscal_quarter
+              AND old.company_id IN (
+                SELECT DISTINCT company_id FROM gold.financial_values
+                WHERE calculation_run_id=%s
               )""", (run_id, run_id))
         conn.execute("""DELETE FROM gold.financial_values old
             WHERE old.calculation_run_id<>%s
-              AND EXISTS (
-                SELECT 1 FROM gold.financial_values current
-                WHERE current.calculation_run_id=%s
-                  AND current.company_id=old.company_id
-                  AND current.fiscal_year=old.fiscal_year
-                  AND current.fiscal_quarter=old.fiscal_quarter
+              AND old.company_id IN (
+                SELECT DISTINCT company_id FROM gold.financial_values
+                WHERE calculation_run_id=%s
               )""", (run_id, run_id))
         conn.execute("""INSERT INTO ops.active_company_versions (dataset_name,company_id,run_id)
             SELECT 'financials',company_id,%s FROM gold.financial_values

@@ -361,3 +361,19 @@ def test_eps_growth_requires_verified_common_share_basis(database, verified):
     calculate_eps_changes(conn, run)
     change = conn.execute("SELECT quarter_qoq_change FROM gold.financial_ratios WHERE ratio_code='eps' AND fiscal_quarter=4").fetchone()["quarter_qoq_change"]
     assert change == (1 if verified else None)
+
+
+def test_missing_archive_member_fails_only_that_filing(tmp_path):
+    import zipfile
+
+    from services.earnings_per_share import _extract_local_filing
+
+    archive = tmp_path / "TEST_2025.zip"
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("TEST_2_2025_2.xls", "x")
+    result = _extract_local_filing({
+        "source_path": f"{archive}/TEST_1_2025_1.xls",
+        "fiscal_year": 2025, "fiscal_quarter": 1, "period_end": None,
+    })
+    assert isinstance(result, FileNotFoundError)
+    assert "missing from its archive" in str(result)

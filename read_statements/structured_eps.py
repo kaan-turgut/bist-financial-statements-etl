@@ -12,16 +12,16 @@ from lxml import html
 from lxml.etree import ParserError, XMLSyntaxError
 from unidecode import unidecode
 
+from models.earnings_per_share import EpsObservation
 from read_statements.eps import (
     EPS_LABEL,
     NOTE,
-    parse_number,
-    _values,
-    _nominal_value,
-    _money_multiplier,
     _eps_unit,
+    _money_multiplier,
+    _nominal_value,
+    _values,
+    parse_number,
 )
-from models.earnings_per_share import EpsObservation
 
 DATES = re.compile(r"\d{2}\.\d{2}\.\d{4}")
 ROLE = re.compile(r"(?:general|holding)_role_(.+)-row-(\d+)")

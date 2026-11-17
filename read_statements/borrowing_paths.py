@@ -9,7 +9,6 @@ from unidecode import unidecode
 
 from read_statements.helpers import load_statement_mappings
 
-
 ROOTS = {
     "kisa vadeli borclanmalar": "diger kisa vadeli borclanmalar",
     "uzun vadeli borclanmalarin kisa vadeli kisimlari":

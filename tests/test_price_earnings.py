@@ -8,11 +8,14 @@ import pytest
 from psycopg.types.json import Jsonb
 
 import pipeline as cli
+from models.earnings_per_share import normalize_observation
 from models.price_earnings import price_earnings
 from services import postgres_financial_pipeline as financials
 from services.earnings_per_share import store_eps_source
-from models.earnings_per_share import normalize_observation
-from services.price_earnings import calculate_price_earnings, calculate_price_earnings_postgres
+from services.price_earnings import (
+    calculate_price_earnings,
+    calculate_price_earnings_postgres,
+)
 
 
 def example():

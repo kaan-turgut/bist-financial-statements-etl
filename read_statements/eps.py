@@ -8,10 +8,10 @@ import re
 import shutil
 import subprocess
 import tempfile
-from pathlib import Path
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError

@@ -6,15 +6,14 @@ from decimal import Decimal
 import pytest
 
 from models.earnings_per_share import normalize_observation
-from read_statements.eps import extract_pdf_eps
 from read_statements import eps as pdf_parser
+from read_statements.eps import extract_pdf_eps
 from read_statements.structured_eps import (
-    structured_eps_cells,
-    normalize_structured_cells,
     merge_eps_observations,
+    normalize_structured_cells,
+    structured_eps_cells,
 )
 from services.earnings_per_share import store_eps_source, update_eps_postgres
-
 
 HEADERS = [
     "01.01.2026 - 30.06.2026",
@@ -302,6 +301,7 @@ def test_zero_nominal_share_value_is_rejected_before_division():
 
 def test_spawned_extraction_returns_rejected_sources_without_database_access(tmp_path):
     import zipfile
+
     from services.earnings_per_share import _prepared_eps_filings
 
     archive = tmp_path / "TEST_2026.zip"
@@ -324,6 +324,7 @@ def test_spawned_extraction_returns_rejected_sources_without_database_access(tmp
 
 def test_legacy_typed_classification_is_corrected_from_same_source_cell():
     from types import SimpleNamespace
+
     from services.earnings_per_share import preserve_verified_eps
 
     old = normalize_observation(
@@ -369,6 +370,7 @@ def test_legacy_typed_classification_is_corrected_from_same_source_cell():
 
 def test_independent_reported_total_eps_is_preserved_when_continuing_eps_is_added():
     from types import SimpleNamespace
+
     from services.earnings_per_share import preserve_verified_eps
 
     old = normalize_observation(

@@ -3,18 +3,19 @@
 import hashlib
 import json
 import logging
+import sys
 import unicodedata
 import zipfile
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import fields, replace
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from multiprocessing import get_context
-import sys
-from unidecode import unidecode
+from pathlib import Path
 from types import SimpleNamespace
+
+from unidecode import unidecode
 
 from models.earnings_per_share import (
     EpsObservation,
@@ -35,10 +36,10 @@ def extract_filing_eps(
     from read_statements.eps import extract_pdf_eps, pdf_pages
     from read_statements.eps_recovery import extract_recoverable_eps
     from read_statements.structured_eps import (
-        structured_eps_cells,
-        normalize_structured_cells,
         merge_eps_observations,
+        normalize_structured_cells,
         reconcile_structured_pdf,
+        structured_eps_cells,
     )
 
     statement = zipped.read(statement_member)
@@ -303,6 +304,10 @@ def _extract_local_filing(filing):
                 filing["period_end"],
                 ocr=filing.get("ocr", False),
             )
+    except KeyError as exc:
+        # KAP can replace an archive with amended filings; a Bronze source path
+        # may then name a member that no longer exists. Fail only this filing.
+        return FileNotFoundError(f"{filing['source_path']} is missing from its archive: {exc}")
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
         return exc
     except ArithmeticError as exc:
@@ -404,9 +409,9 @@ def calculate_eps_ratios(conn, run_id, company_ids=None):
         "DELETE FROM gold.eps_values WHERE calculation_run_id=%s AND company_id=ANY(%s)",
         (run_id, company_ids),
     )
-    from services.eps_coverage import load_capital_histories, calculate_eps_coverage
     from models.eps_capital import verified_share_basis
     from models.financial_values import CpiSeries
+    from services.eps_coverage import calculate_eps_coverage, load_capital_histories
 
     capital = load_capital_histories(conn, company_ids)
     cpi = CpiSeries(
@@ -696,6 +701,7 @@ def refresh_eps_postgres(companies=None):
     refresh run is recorded in calculation_details and ops snapshot history.
     """
     from psycopg.types.json import Jsonb
+
     from services import postgres_financial_pipeline as financials
     from services.price_earnings import calculate_price_earnings
 

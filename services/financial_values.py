@@ -5,7 +5,10 @@ from datetime import date
 from psycopg.types.json import Jsonb
 
 from models.financial_values import CpiSeries, calculate_values
-from read_statements.borrowing_paths import BORROWING_PATH_ITEMS, borrowing_path_overrides
+from read_statements.borrowing_paths import (
+    BORROWING_PATH_ITEMS,
+    borrowing_path_overrides,
+)
 
 
 def restore_borrowing_paths(conn, observations):
